@@ -29,7 +29,7 @@ import { CronScheduler } from '../../src/tools/cron.js';
 import { MessageBus } from '../../src/tools/teams.js';
 import { WorktreeManager } from '../../src/tools/worktree.js';
 import { McpPool } from '../../src/tools/mcp.js';
-import type { Session } from '../../src/types.js';
+import { lastText, type Session } from '../../src/types.js';
 import { DEFAULT_SCENARIOS, buildReport, formatReport, type EvalContext, type EvalScenario } from './scenarios.js';
 
 interface EvalLog {
@@ -130,6 +130,7 @@ function makeCtx(workdir: string, logs: EvalLog[], session: Session, agent: Agen
     messagesCount: session.messages.length,
     usage: { inputTokens: usage.totalInput, outputTokens: usage.totalOutput, calls: usage.calls },
     durationMs,
+    finalText: lastText(session.messages),
   };
 }
 

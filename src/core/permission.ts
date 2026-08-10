@@ -48,10 +48,15 @@ const HARNESS_TOOLS = new Set([
 
 /** 只读安全命令（规则分类器白名单）。 */
 const SAFE_READ_CMD =
-  /^(git\s+(status|log|diff|show|branch|remote|config|help|--version|rev-parse|ls-files|stash\s+list)|ls\b|dir\b|cat\b|type\b|more\b|findstr\b|rg\b|grep\b|find\b|pwd\b|cd\b|echo\b|whoami\b|node\s+(-v|--version)|npm\s+(-v|--version)|git\s+status)/i;
+  /^(git\s+(status|log|diff|show|branch|remote|config|help|--version|rev-parse|ls-files|stash\s+list)|ls\b|dir\b|cat\b|type\b|more\b|findstr\b|rg\b|grep\b|find\b|pwd\b|cd\b|echo\b|whoami\b|node\s+(-v|--version)|npm\s+(-v|--version)|git\s+status|Get-ChildItem\b|Get-Content\b|Select-String\b|Test-Path\b|Get-Item\b|Get-Command\b|Get-Location\b|Set-Location\b)/i;
 
 const DANGEROUS_CMD =
   /(\brm\s|\bdel\s|\brd\s|\brmdir\b|\bmove\s|\bren\s|git\s+reset\s+--hard|git\s+push\s+(-f|--force)|git\s+checkout\s+-f|git\s+clean\s+-f|taskkill\b|\bkill\s|format\s|mkfs\b|shutdown\b|reboot\b)/i;
+
+/** 只读白名单的补充黑名单：读命令管道到执行/下载/写盘 = 远程代码执行或数据外传，
+    例如 `Get-Content x.ps1 | iex` 绝不能被 auto 模式自动放行。 */
+const UNSAFE_READ_ADDON =
+  /(iex\b|Invoke-Expression|Invoke-Command|Invoke-WebRequest|Invoke-RestMethod|Start-Process|Start-Job|Start-BitsTransfer|New-Object\s+(System\.Net\.)?WebClient|DownloadString|DownloadFile|Out-File|Set-Content|Add-Content|Clear-Content|Remove-Item|Set-ExecutionPolicy|\bcurl\b|\bwget\b|net\s+user|reg\s+add|schtasks\b)/i;
 
 export function isInside(workdir: string, p: string): boolean {
   const resolved = path.resolve(workdir, p);
@@ -131,7 +136,7 @@ export class PermissionGate {
       if (verdict === 'unsafe') {
         return this.approve(`bash: ${cmd.slice(0, 200)}`, 'classifier: unsafe', true);
       }
-      const safe = SAFE_READ_CMD.test(cmd) && !DANGEROUS_CMD.test(cmd);
+      const safe = SAFE_READ_CMD.test(cmd) && !DANGEROUS_CMD.test(cmd) && !UNSAFE_READ_ADDON.test(cmd);
       if (safe) return { allow: true, reason: 'classifier: safe read command' };
       return this.approve(`bash: ${cmd.slice(0, 200)}`, 'potentially dangerous command');
     }

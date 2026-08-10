@@ -56,10 +56,27 @@ export class Sandbox {
     const child = spawn(shell, args, {
       cwd: this.opts.cwd,
       windowsHide: true,
+      /* POSIX 独立进程组：超时可整组杀掉；Windows 靠 taskkill /t 杀树 */
+      detached: process.platform !== 'win32',
     });
 
     const timeoutMs = this.opts.timeoutMs ?? 120_000;
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    const timer = setTimeout(() => {
+      if (process.platform === 'win32') {
+        /* kill 只杀 cmd.exe 本身，孙进程（node/python 等）会孤儿化 → taskkill 杀整棵树 */
+        try {
+          spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
+        } catch {
+          child.kill();
+        }
+      } else {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }
+    }, timeoutMs);
 
     let out = '';
     const max = this.opts.maxOutputChars ?? 50_000;

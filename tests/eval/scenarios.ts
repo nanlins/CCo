@@ -17,6 +17,8 @@ export interface EvalContext {
   messagesCount: number;
   usage: { inputTokens: number; outputTokens: number; calls: number };
   durationMs: number;
+  /** agent 最终回答文本（供内容级断言，如"结论必须覆盖各文档要点"）。 */
+  finalText: string;
 }
 
 export interface EvalScenario {
@@ -139,6 +141,56 @@ export const DEFAULT_SCENARIOS: EvalScenario[] = [
     check: async (workdir) => {
       const p = path.join(workdir, 'hello_eval.py');
       if (!fs.existsSync(p)) return '期望文件 hello_eval.py 不存在';
+      return null;
+    },
+  },
+  {
+    // 回归场景：多文档分析（对应实测 sess_1786299904107 暴露的问题）
+    //   1) glob '**/' 必须能命中根层文件（曾返回"（无匹配）"）
+    //   2) 每份文档都要被完整读到（曾 limit 自截断只读开头）
+    //   3) 结论必须覆盖各文档要点（含位于文档中后段的标记）
+    id: 'sc-06',
+    name: '多文档分析：glob 命中 + 完整阅读 + 结论覆盖',
+    prompt:
+      '阅读 docs/ 目录下的所有 md 文档，然后回答：每份文档的代号密语分别是什么？' +
+      '要求逐份列出（格式：文件名 -> 密语），密语可能出现在文档的任何位置，包括中间和结尾。',
+    requiresTool: ['read_file'],
+    setup: (workdir) => {
+      const docs = path.join(workdir, 'docs');
+      fs.mkdirSync(docs, { recursive: true });
+      // 三份文档：代号分别放在 开头 / 中间 / 结尾，检验是否完整阅读
+      fs.writeFileSync(
+        path.join(docs, 'alpha.md'),
+        ['# Alpha 文档', '', '代号密语：ALPHA-KEY-001', '', '其余内容是普通说明。'].join('\n'),
+      );
+      const midPad = Array.from({ length: 40 }, (_, i) => `第 ${i} 行填充内容。`);
+      fs.writeFileSync(
+        path.join(docs, 'beta.md'),
+        ['# Beta 文档', '', ...midPad.slice(0, 20), '', '代号密语：BETA-KEY-002', '', ...midPad.slice(20)].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(docs, 'gamma.md'),
+        ['# Gamma 文档', '', ...midPad, '', '代号密语：GAMMA-KEY-003'].join('\n'),
+      );
+    },
+    check: async (workdir, ctx) => {
+      // 1) 三份文档都被 read_file 读过
+      const readPaths = ctx.logs
+        .filter((l) => l.tool === 'read_file')
+        .map((l) => String(l.args.path ?? ''));
+      for (const name of ['alpha', 'beta', 'gamma']) {
+        if (!readPaths.some((p) => p.includes(name))) return `未读取 ${name}.md`;
+      }
+      // 2) glob 若被使用，必须能命中（'**/' 零层目录回归）
+      const globCall = ctx.logs.find((l) => l.tool === 'glob' && String(l.args.pattern ?? '').includes('**'));
+      if (globCall && globCall.output.includes('无匹配')) {
+        return `glob '${globCall.args.pattern}' 未命中任何文件（**/ 零层目录回归失败）`;
+      }
+      // 3) 最终结论必须覆盖三个代号（含位于文档中/尾的）
+      for (const key of ['ALPHA-KEY-001', 'BETA-KEY-002', 'GAMMA-KEY-003']) {
+        if (!ctx.finalText.includes(key)) return `最终回答缺少 ${key}（文档未被完整阅读或结论遗漏）`;
+      }
+      void workdir;
       return null;
     },
   },

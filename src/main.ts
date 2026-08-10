@@ -13,6 +13,7 @@
 import path from 'node:path';
 import { loadConfig, type AppConfig } from './config.js';
 import { AnthropicLlm, type LlmClient } from './llm/client.js';
+import { OpenAiLlm } from './llm/openai.js';
 import { MockLlm, type ScriptedTurn } from './llm/mock.js';
 import { Agent, type AgentEvent } from './core/agent.js';
 import { HookRegistry } from './core/hooks.js';
@@ -95,14 +96,19 @@ export interface HarnessOverrides extends Partial<AppConfig> {
 
 export function createHarness(overrides: HarnessOverrides = {}): Harness {
   const config = loadConfig(overrides);
-  if (config.mock && config.apiKey) {
+  const effectiveKey = config.llmProtocol === 'openai' ? config.openaiApiKey : config.apiKey;
+  if (config.mock && effectiveKey) {
     console.error(
-      '[警告] 已检测到 .env 中的 ANTHROPIC_API_KEY，但 MOCK=1 环境变量强制进入离线模式。' +
+      '[警告] 已检测到 .env 中的 API key，但 MOCK=1 环境变量强制进入离线模式。' +
         '如需使用真实模型，请先运行 `Remove-Item Env:MOCK` 后重启。',
     );
   }
   const llm: LlmClient =
-    config.mock || !config.apiKey ? new MockLlm({ script: DEMO_SCRIPT }) : new AnthropicLlm(config);
+    config.mock || !effectiveKey
+      ? new MockLlm({ script: DEMO_SCRIPT })
+      : config.llmProtocol === 'openai'
+        ? new OpenAiLlm(config)
+        : new AnthropicLlm(config);
 
   const workspaceDir = config.workspaceDir;
   const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -113,8 +119,12 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
     baseSystem:
       "You are 小锤 (Anvil), a coding assistant. " +
       "Use tools to solve tasks efficiently. " +
-      "Act, don't explain unless asked. Plan with TodoWrite for multi-step work. " +
-      "Never claim a task completed until you verified it.",
+      "Act, don't explain unless asked. Plan with TodoWrite for multi-step work (mark each item completed as you finish it). " +
+      "Never claim a task completed until you verified it. " +
+      "When a task needs reading/searching many files, batch multiple read_file/glob/grep calls into one turn so they run in parallel. " +
+      "Read documents COMPLETELY: if you use limit, continue with offset until the whole file is covered — never cite a document you only partially read. " +
+      "Explore project structure with list_files recursive=true or glob '**' patterns, not shell commands. " +
+      "For large-scale reading (more than ~8 files or ~200KB of text), split the work: spawn_subagent per file group (each returns a structured summary with file:line evidence), or index_docs + search_docs to retrieve on demand instead of loading everything.",
     messages: [],
     todos: [],
     startTime: Date.now(),
@@ -205,6 +215,19 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
       console.error('[hook] ⚠ large bash output');
     }
     return undefined;
+  });
+
+  /* Stop 闸门：建了 TodoWrite 计划就必须做完（或明确说明）才能结束。
+     agent 对 blockingError 只重试一次（stopHookActive 防死循环）。 */
+  hooks.register('Stop', () => {
+    const todos = session.todos;
+    if (todos.length === 0) return undefined;
+    const open = todos.filter((t) => t.status !== 'completed');
+    if (open.length === 0) return undefined;
+    const names = open.slice(0, 5).map((t) => t.content).join('；');
+    return {
+      blockingError: `Todo 尚有 ${open.length} 项未完成（${names}${open.length > 5 ? '…' : ''}）。请继续完成；确实无法完成的，说明原因后再结束。`,
+    };
   });
 
   /* 安全：UserPromptSubmit 阶段检测 Prompt Injection（OWASP 参考） */
@@ -310,6 +333,7 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
       description: '用 LLM 摘要压缩对话（上下文变长时调用）。',
       input_schema: { type: 'object', properties: {} },
     },
+    timeoutMs: 180_000,
     executor: async (): Promise<string> => {
       if (countChars(session.messages) < 10_000) {
         return `Context is small (${countChars(session.messages)} chars); compaction unnecessary.`;
@@ -384,10 +408,11 @@ const HELP_TEXT = `命令：
 
 async function main(): Promise<void> {
   const harness = createHarness();
-  const needsConfig = !harness.config.apiKey && !harness.config.mock;
+  const activeKey = harness.config.llmProtocol === 'openai' ? harness.config.openaiApiKey : harness.config.apiKey;
+  const needsConfig = !activeKey && !harness.config.mock;
   await startRepl({
     agent: harness.agent,
-    banner: `小锤 Anvil — ${harness.config.mock ? 'MOCK' : harness.config.model} | mode=${harness.config.permissionMode} | workdir=${harness.config.workspaceDir}\nType /help for commands.`,
+    banner: `小锤 Anvil — ${harness.config.mock ? 'MOCK' : `[${harness.config.llmProtocol}] ${harness.config.model}`} | mode=${harness.config.permissionMode} | workdir=${harness.config.workspaceDir}\nType /help for commands.`,
     streams: true,
     needsConfig,
     onReady: (askQuestion) => {
@@ -405,7 +430,7 @@ async function main(): Promise<void> {
         case 'tools':
           return `Available: ${harness.registry.list().join(', ')}`;
         case 'config':
-          return `model=${harness.config.model} baseUrl=${harness.config.baseUrl} mode=${harness.config.permissionMode} sandbox=${harness.config.sandboxCmd ?? 'none'} mock=${harness.config.mock}`;
+          return `model=${harness.config.model} protocol=${harness.config.llmProtocol} baseUrl=${harness.config.llmProtocol === 'openai' ? harness.config.openaiBaseUrl : harness.config.baseUrl} mode=${harness.config.permissionMode} sandbox=${harness.config.sandboxCmd ?? 'none'} mock=${harness.config.mock}`;
         case 'compact': {
           if (harness.session.messages.length === 0) return '（尚无对话）';
           const result = await compactHistory(harness.session.messages, harness.llm, {
@@ -451,8 +476,13 @@ async function main(): Promise<void> {
         case 'apikey': {
           /* 运行时配置 API key（上线场景：用户可在此输入自己的 key） */
           if (args[0]) {
-            harness.config.apiKey = args[0];
-            setEnvValue(harness.config.workspaceDir, 'ANTHROPIC_API_KEY', args[0]);
+            if (harness.config.llmProtocol === 'openai') {
+              harness.config.openaiApiKey = args[0];
+              setEnvValue(harness.config.workspaceDir, 'OPENAI_API_KEY', args[0]);
+            } else {
+              harness.config.apiKey = args[0];
+              setEnvValue(harness.config.workspaceDir, 'ANTHROPIC_API_KEY', args[0]);
+            }
             return `API key 已更新（已写入 .env，重启保留）`;
           }
           return '用法: /apikey sk-xxx';

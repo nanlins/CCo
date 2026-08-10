@@ -40,6 +40,14 @@ export class RedisService {
         retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 200, 2000)),
         lazyConnect: true,
       });
+      /* 生产级：连接断开必须落状态，否则 isConnected() 撒谎 + ioredis 抛 unhandled error */
+      client.on('error', () => {
+        this.connected = false;
+      });
+      client.on('end', () => {
+        this.connected = false;
+        this.client = null;
+      });
       await client.connect();
       this.client = client;
       this.connected = true;

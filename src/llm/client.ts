@@ -38,7 +38,7 @@ export interface LlmCallParams {
 export interface LlmResult {
   content: AssistantBlock[];
   stopReason: string | null;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
   model: string;
   /** 结构化输出模式下，从强制工具调用中提取的 JSON 数据。 */
   structured?: Record<string, unknown>;
@@ -130,6 +130,9 @@ export class AnthropicLlm implements LlmClient {
           : {
               inputTokens: final.usage.input_tokens,
               outputTokens: final.usage.output_tokens,
+              /* 供应商有 prompt cache 时（如 DeepSeek），input_tokens 只报增量，
+                 真实上下文规模 = input + cache_read，必须单独记录否则用量严重失真。 */
+              cacheReadTokens: final.usage.cache_read_input_tokens ?? undefined,
             },
       model: final.model,
       structured,

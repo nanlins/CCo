@@ -27,7 +27,8 @@ export function spawnSubagentTool(): ToolDef {
     schema: {
       name: 'spawn_subagent',
       description:
-        '派生一个上下文隔离的子 Agent 来探索或实现一个有界的任务。只返回其最终摘要。fork=true 时复用父会话历史（prompt cache 命中，更省 token）。',
+        '派生一个上下文隔离的子 Agent 来探索或实现一个有界的任务，返回带 file:line 证据的结构化摘要（## Findings / ## Result）。' +
+        '大批量阅读/分析任务（>8 个文件或 >200KB）应拆给多个子 Agent 分别处理再汇总。fork=true 时复用父会话历史（prompt cache 命中，更省 token）。',
       input_schema: {
         type: 'object',
         properties: {
@@ -47,6 +48,8 @@ export function spawnSubagentTool(): ToolDef {
         required: ['prompt'],
       },
     },
+    /* 子 Agent 是分钟级任务，默认 60s 工具超时会让父级误报 timeout（子级其实还在干活） */
+    timeoutMs: 600_000,
     executor: async (args: Record<string, unknown>, ctx: ToolContext): Promise<string> => {
       const prompt = String(args.prompt ?? '');
       if (!prompt.trim()) return 'Error: prompt required';
@@ -62,8 +65,10 @@ export function spawnSubagentTool(): ToolDef {
         cwd: ctx.session.cwd,
         baseSystem: fork
           ? ctx.session.baseSystem
-          : 'You are a subagent of a coding agent. Do the task and return a concise summary of findings/results. ' +
-            'Do not ask questions; make reasonable assumptions.',
+          : 'You are a subagent of a coding agent. Do the task, then reply with ONLY a structured report:\n' +
+            '## Findings\n- <finding> (evidence: <file:line or command>)\n' +
+            '## Result\n<concise answer / changes made / remaining risks>\n' +
+            'Every claim must carry evidence. Do not ask questions; make reasonable assumptions.',
         messages: fork ? [...ctx.session.messages] : [],
         todos: [],
         startTime: Date.now(),

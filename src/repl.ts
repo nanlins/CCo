@@ -180,7 +180,8 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   for (;;) {
     let line: string;
     try {
-      line = await rl.question(C.teal + '❯ ' + C.reset);
+      /* 提示符必须无 ANSI：readline 按提示符长度计算换行，带颜色码会让长输入重绘错乱（首行重复） */
+      line = await rl.question('❯ ');
     } catch {
       break;
     }
@@ -199,9 +200,10 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       continue;
     }
 
-    /* 用户指令入日志 */
+    /* 用户指令入日志：刚输入的内容不整段复读，长输入只留摘要（避免"再说一遍"的冗余感） */
     log('');
-    log('  ' + badge('你') + C.bold + ' ' + trimmed + C.reset);
+    const echo = trimmed.length > 120 ? `${trimmed.slice(0, 120)}…（共 ${trimmed.length} 字）` : trimmed;
+    log('  ' + badge('你') + C.bold + ' ' + echo + C.reset);
     log('');
 
     try {
@@ -222,8 +224,14 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
         process.stdout.write(cleanMarkdown(textBuffer));
         textBuffer = '';
       }
+      const msg = err instanceof Error ? err.message : String(err);
       log('');
-      log('  ' + errorLabel(`[错误] ${err instanceof Error ? err.message : String(err)}`));
+      log('  ' + errorLabel(`[错误] ${msg}`));
+      /* 计费/账户级错误单独提示：与密钥字符串无关，避免"换了 key 怎么还报错"的困惑 */
+      if (/overdue-payment|access denied|account is in good standing|insufficient balance|balance insufficient|quota/i.test(msg)) {
+        log('  ' + C.dim + '提示：这是账户计费/权限级错误——同一账户换新 key 也会失败。' +
+          '充值或换账户后直接重试即可：/apikey sk-xxx 立即生效，无需重启。' + C.reset);
+      }
     }
   }
   rl.close();

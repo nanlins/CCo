@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Context Compact —— 上下文总会满，要有办法腾地方（s08 模式）。
  *
  * 四层管线（便宜的先跑，贵的后跑）：
@@ -23,6 +23,10 @@ export interface CompactOptions {
   maxToolResultChars: number;
   persistDir: string;
   onAction?: (action: string) => void;
+  /** 压缩/落盘时把对应文件标记为 evicted，供 read_file 重读完整内容。 */
+  readFileState?: ReadFileState;
+  /** 解析 read_file 相对路径的基准目录（默认进程 cwd）。 */
+  baseDir?: string;
 }
 
 const DEFAULTS = {
@@ -31,6 +35,36 @@ const DEFAULTS = {
   keepRecentToolResults: 3,
   maxToolResultChars: 200_000,
 };
+
+/** 知识类工具的结果是 agent 推理的依据，压缩掉会造成"读了后面忘了前面"。 */
+const KNOWLEDGE_TOOLS = new Set(['read_file', 'pdf_parsing', 'search_docs']);
+
+/** 扫描全部消息，建立 tool_use_id -> { name, path } 映射，用于识别每个 tool_result 的来源。 */
+function buildToolMap(messages: Message[]): Map<string, { name: string; path?: string }> {
+  const map = new Map<string, { name: string; path?: string }>();
+  for (const m of messages) {
+    if (typeof m.content === 'string') continue;
+    for (const b of m.content) {
+      if (b.type === 'tool_use') {
+        const input = b.input as Record<string, unknown>;
+        map.set(b.id, {
+          name: b.name,
+          path: typeof input.path === 'string' ? input.path : undefined,
+        });
+      }
+    }
+  }
+  return map;
+}
+
+/** 解析 read_file 的绝对路径；无法解析时返回 null。 */
+function resolveReadPath(baseDir: string | undefined, rel: string): string | null {
+  try {
+    return path.resolve(baseDir ?? '.', rel);
+  } catch {
+    return null;
+  }
+}
 
 /** 同步三层（0 API）。 */
 export function compactMessages(messages: Message[], opts: Partial<CompactOptions>): Message[] {
@@ -41,37 +75,95 @@ export function compactMessages(messages: Message[], opts: Partial<CompactOption
     ...opts,
   };
   let msgs = messages;
-  msgs = toolResultBudget(msgs, o);
+  const toolMap = buildToolMap(msgs);
+  msgs = toolResultBudget(msgs, o, toolMap);
   msgs = snipCompact(msgs, o);
-  msgs = microCompact(msgs, o);
+  msgs = microCompact(msgs, o, toolMap);
   return msgs;
+}
+
+/** 把 [start, end) 区间内被移除的知识类 read 路径标记 evicted，保证重读能拿回全文。 */
+function evictKnowledgeInRegion(
+  messages: Message[],
+  start: number,
+  end: number,
+  o: Pick<CompactOptions, 'readFileState' | 'baseDir'>,
+): void {
+  if (!o.readFileState) return;
+  for (let i = start; i < end && i < messages.length; i++) {
+    for (const b of messageBlocks(messages[i])) {
+      if (b.type !== 'tool_use' || !KNOWLEDGE_TOOLS.has(b.name)) continue;
+      const rel = (b.input as Record<string, unknown>).path;
+      if (typeof rel !== 'string' || !rel) continue;
+      const abs = resolveReadPath(o.baseDir, rel);
+      if (abs) o.readFileState.markEvicted(abs);
+    }
+  }
 }
 
 /* ---------- L3: budget（大结果落盘） ---------- */
 
-function toolResultBudget(messages: Message[], o: CompactOptions): Message[] {
+function toolResultBudget(messages: Message[], o: CompactOptions, toolMap: Map<string, { name: string; path?: string }>): Message[] {
+  /* 通道 1：最新一批 tool_result 超过单批预算 → 落盘最大的若干条 */
   const last = messages[messages.length - 1];
-  if (!last || last.role !== 'user') return messages;
-  const results = messageBlocks(last).filter(isToolResultBlock);
-  if (results.length === 0) return messages;
-  const total = results.reduce((s, r) => s + r.content.length, 0);
-  if (total <= o.maxToolResultChars) return messages;
+  if (last && last.role === 'user') {
+    const results = messageBlocks(last).filter(isToolResultBlock);
+    const total = results.reduce((s, r) => s + r.content.length, 0);
+    if (results.length > 0 && total > o.maxToolResultChars) {
+      persistLargestResults(results, total - o.maxToolResultChars, o, toolMap);
+    }
+  }
+  /* 通道 2（阈值闸门）：全量字符数超过 thresholdChars → 对历史中最大的结果落盘，
+     直到回到阈值以下。这是 0-API 的主动压缩，防止直接撞上 prompt_too_long。 */
+  const chars = countChars(messages);
+  if (chars > o.thresholdChars) {
+    const all: ToolResultBlock[] = [];
+    for (const m of messages) {
+      for (const b of messageBlocks(m)) {
+        if (!isToolResultBlock(b) || b.content.length <= 2500 || b.content.startsWith('<persisted-output')) continue;
+        /* 知识类（read_file 等）不在此落盘：落盘后模型只见 2000 字预览会绕道 bash，
+           重读又再次超阈→"循环持久化"。知识溢出交给 L4 摘要+恢复机制处理。 */
+        const src = toolMap.get(b.tool_use_id);
+        if (src && KNOWLEDGE_TOOLS.has(src.name)) continue;
+        all.push(b);
+      }
+    }
+    if (all.length > 0) {
+      persistLargestResults(all, chars - o.thresholdChars, o, toolMap);
+    }
+  }
+  return messages;
+}
 
+/** 把最大的若干 tool_result 落盘，只留预览+指针，直到释放够 freedChars。 */
+function persistLargestResults(
+  results: ToolResultBlock[],
+  freedChars: number,
+  o: CompactOptions,
+  toolMap: Map<string, { name: string; path?: string }>,
+): void {
+  if (freedChars <= 0 || results.length === 0) return;
   fs.mkdirSync(o.persistDir, { recursive: true });
   const sorted = [...results].sort((a, b) => b.content.length - a.content.length);
-  let budget = total - o.maxToolResultChars;
+  let budget = freedChars;
   let persisted = 0;
   for (const r of sorted) {
     if (budget <= 0) break;
+    const originalLen = r.content.length;
     const fname = `tool_result_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.txt`;
     fs.writeFileSync(path.join(o.persistDir, fname), r.content, 'utf8');
     r.content = `<persisted-output file="${fname}" note="Full content on disk; read it back if needed.">\n${r.content.slice(0, 2000)}`;
-    budget -= r.content.length;
+    budget -= originalLen - r.content.length;
     persisted += 1;
     o.onAction?.(`[compact L3] persisted ${fname}`);
+    /* 知识类文件被落盘移除 → 标记 evicted，重读时返回完整内容 */
+    const src = toolMap.get(r.tool_use_id);
+    if (o.readFileState && src && KNOWLEDGE_TOOLS.has(src.name) && src.path) {
+      const abs = resolveReadPath(o.baseDir, src.path);
+      if (abs) o.readFileState.markEvicted(abs);
+    }
   }
   if (persisted > 0) o.onAction?.(`[compact L3] persisted ${persisted} large tool results to disk`);
-  return messages;
 }
 
 /* ---------- L1: snip（裁中段） ---------- */
@@ -110,6 +202,8 @@ export function snipCompact(messages: Message[], o: CompactOptions): Message[] {
 
   if (tailStart <= headEnd) return messages;
   const snippedCount = tailStart - headEnd;
+  /* 被裁掉的知识类内容标记 evicted：否则重读会撞上 FILE_UNCHANGED_STUB，信息永久丢失 */
+  evictKnowledgeInRegion(messages, headEnd, tailStart, o);
   const out = [
     ...messages.slice(0, headEnd),
     { role: 'user' as const, content: `[snipped ${snippedCount} messages from conversation middle]` },
@@ -138,7 +232,11 @@ function findSafeBoundary(messages: Message[], desired: number, lo: number, hi: 
 }
 /* ---------- L2: micro（旧结果占位） ---------- */
 
-export function microCompact(messages: Message[], o: CompactOptions): Message[] {
+export function microCompact(
+  messages: Message[],
+  o: CompactOptions,
+  toolMap: Map<string, { name: string; path?: string }> = buildToolMap(messages),
+): Message[] {
   const results: ToolResultBlock[] = [];
   for (const m of messages) {
     for (const b of messageBlocks(m)) {
@@ -147,12 +245,19 @@ export function microCompact(messages: Message[], o: CompactOptions): Message[] 
   }
   const toCompact = results.slice(0, Math.max(0, results.length - o.keepRecentToolResults));
   if (toCompact.length === 0) return messages;
+  let compacted = 0;
   for (const block of toCompact) {
-    if (block.content.length > 120) {
-      block.content = '[Earlier tool result compacted. Re-run if needed.]';
+    if (block.content.length <= 120) continue;
+    if (block.content.startsWith('[Earlier tool result compacted')) continue;
+    const src = toolMap.get(block.tool_use_id);
+    /* 知识类工具的结果保留原文，防止"读了后面忘了前面" */
+    if (src && KNOWLEDGE_TOOLS.has(src.name)) {
+      continue;
     }
+    block.content = '[Earlier tool result compacted. Re-run if needed.]';
+    compacted += 1;
   }
-  o.onAction?.(`[compact L2] compacted ${toCompact.length} old tool results`);
+  if (compacted > 0) o.onAction?.(`[compact L2] compacted ${compacted} old tool results`);
   return messages;
 }
 
@@ -195,6 +300,7 @@ export async function compactHistory(
   const minChars = opts.sessionMemoryMinChars ?? 2000;
   if (opts.sessionMemory && opts.sessionMemory.length >= minChars) {
     const keep = opts.keepRecentMessages ?? 10;
+    evictDroppedPrefix(messages, keep, opts);
     const tail = messages.slice(-keep);
     const restored = opts.readFileState
       ? restoreRecentFileReads(messages, opts.readFileState, {
@@ -224,6 +330,7 @@ export async function compactHistory(
     .trim();
   const summary = extractSummary(text) ?? text;
   const keep = opts.keepRecentMessages ?? 10;
+  evictDroppedPrefix(messages, keep, opts);
   const tail = messages.slice(-keep);
 
   const restored = opts.readFileState
@@ -239,6 +346,16 @@ export async function compactHistory(
     summary,
     source: 'llm',
   };
+}
+
+/** 压缩会丢弃尾部之前的全部消息：把其中的知识类 read 路径标记 evicted，防止重读撞上 stub。 */
+function evictDroppedPrefix(messages: Message[], keep: number, opts: CompactHistoryOptions): void {
+  if (!opts.readFileState) return;
+  const dropEnd = Math.max(0, messages.length - keep);
+  evictKnowledgeInRegion(messages, 0, dropEnd, {
+    readFileState: opts.readFileState,
+    baseDir: opts.restoreBaseDir,
+  });
 }
 
 /** 从被压缩的历史中提取最近 read_file 的路径，重新读取未变化文件并注入上下文。 */
@@ -273,6 +390,8 @@ function restoreRecentFileReads(
         role: 'user',
         content: `[Restored context] File ${rel}:\n${content}`,
       });
+      /* 内容已重新注入上下文 → 清除 evicted 标记（重读返回 stub 即可，避免重复灌全文） */
+      rfs.clearEvicted(abs);
     } catch {
       // 文件不存在或不可读则跳过
     }
