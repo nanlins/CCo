@@ -52,6 +52,8 @@ export interface Session {
   startTime: number;
   /** 跨压缩的会话摘要（SessionMemoryCompact 用）。 */
   sessionMemory?: string;
+  /** 研究任务的必答问题清单（交付检查表）。 */
+  checklist?: string[];
 }
 
 export interface ToolSchema {
@@ -60,10 +62,7 @@ export interface ToolSchema {
   input_schema: Record<string, unknown>;
 }
 
-export type ToolExecutor = (
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-) => Promise<string> | string;
+export type ToolExecutor = (args: Record<string, unknown>, ctx: ToolContext) => Promise<string> | string;
 
 export interface ToolDef {
   schema: ToolSchema;
@@ -78,7 +77,16 @@ export interface ToolDef {
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
-export type PermissionMode = 'ask' | 'auto' | 'deny';
+/**
+ * 权限模式：
+ *   ask    —— 非明确 safe 的操作一律询问用户；
+ *   auto   —— 仅"明确 safe 分类"（只读白名单命令 / 工作区内写入 / classifier=safe）自动放行，
+ *             未知或危险命令仍转人工审批（不再自动放行）；
+ *   deny   —— 拒绝一切需要审批的操作（只读工具除外）；
+ *   bypass —— 危险语义：跳过一切人工审批（等价旧版 auto 的放行行为）。
+ *             仅在完全可信的隔离环境使用，风险自负。
+ */
+export type PermissionMode = 'ask' | 'auto' | 'deny' | 'bypass';
 
 /** 工具执行上下文：workdir 跟随 worktree 切换，ask 是审批回调。 */
 export interface ToolContext {

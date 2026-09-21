@@ -102,7 +102,7 @@ export class PluginMarket {
   }
 
   /** 搜索远程 plugin（预留接口，当前返回空）。 */
-  async searchRegistry(query: string): Promise<PluginInfo[]> {
+  async searchRegistry(_query: string): Promise<PluginInfo[]> {
     /* TODO: 实现远程 registry 搜索 */
     return [];
   }
@@ -132,24 +132,31 @@ export class PluginMarket {
     return { success: false, message: `Unknown source: ${source}` };
   }
 
-  /** 卸载 plugin。 */
+  /** 卸载 plugin。名称可以是安装目录名，也可以是 manifest/SKILL.md 里的显示名。 */
   uninstall(name: string): { success: boolean; message: string } {
-    const pluginPath = path.join(this.skillsDir, name);
+    /* 1) 先按目录名直接匹配 */
+    let pluginPath = path.join(this.skillsDir, name);
     if (!fs.existsSync(pluginPath)) {
-      return { success: false, message: `Plugin '${name}' not found` };
+      /* 2) 再按显示名（manifest name / SKILL.md frontmatter name）查找 */
+      const hit = this.listInstalled().find((p) => p.name === name && p.path);
+      if (!hit?.path) {
+        return { success: false, message: `Plugin '${name}' not found（既非目录名也非显示名）` };
+      }
+      pluginPath = hit.path;
     }
     try {
       fs.rmSync(pluginPath, { recursive: true, force: true });
-      return { success: true, message: `Uninstalled '${name}'` };
+      return { success: true, message: `Uninstalled '${name}' (${path.basename(pluginPath)})` };
     } catch (err) {
       return { success: false, message: `Uninstall failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
 
-  /** 获取 plugin 详情。 */
+  /** 获取 plugin 详情。名称可以是安装目录名，也可以是显示名。 */
   getDetails(name: string): PluginInfo | null {
     const pluginPath = path.join(this.skillsDir, name);
-    if (!fs.existsSync(pluginPath)) return null;
-    return this.readPluginInfo(pluginPath);
+    if (fs.existsSync(pluginPath)) return this.readPluginInfo(pluginPath);
+    const hit = this.listInstalled().find((p) => p.name === name);
+    return hit ?? null;
   }
 }

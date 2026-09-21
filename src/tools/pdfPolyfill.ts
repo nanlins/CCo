@@ -19,22 +19,72 @@ if (!(globalThis as Record<string, unknown>).DOMMatrix) {
         this.m = [1, 0, 0, 1, 0, 0];
       }
     }
-    multiplySelf() { return this; }
-    translate() { return this; }
-    scale() { return this; }
-    rotate() { return this; }
-    skewX() { return this; }
-    skewY() { return this; }
-    flipX() { return this; }
-    flipY() { return this; }
-    inverse() { return this; }
-    transformPoint(p: { x: number; y: number }) { return { x: p.x, y: p.y }; }
-    get a() { return this.m[0]; } set a(v) { this.m[0] = v; }
-    get b() { return this.m[1]; } set b(v) { this.m[1] = v; }
-    get c() { return this.m[2]; } set c(v) { this.m[2] = v; }
-    get d() { return this.m[3]; } set d(v) { this.m[3] = v; }
-    get e() { return this.m[4]; } set e(v) { this.m[4] = v; }
-    get f() { return this.m[5]; } set f(v) { this.m[5] = v; }
+    multiplySelf() {
+      return this;
+    }
+    translate() {
+      return this;
+    }
+    scale() {
+      return this;
+    }
+    rotate() {
+      return this;
+    }
+    skewX() {
+      return this;
+    }
+    skewY() {
+      return this;
+    }
+    flipX() {
+      return this;
+    }
+    flipY() {
+      return this;
+    }
+    inverse() {
+      return this;
+    }
+    transformPoint(p: { x: number; y: number }) {
+      return { x: p.x, y: p.y };
+    }
+    get a() {
+      return this.m[0];
+    }
+    set a(v) {
+      this.m[0] = v;
+    }
+    get b() {
+      return this.m[1];
+    }
+    set b(v) {
+      this.m[1] = v;
+    }
+    get c() {
+      return this.m[2];
+    }
+    set c(v) {
+      this.m[2] = v;
+    }
+    get d() {
+      return this.m[3];
+    }
+    set d(v) {
+      this.m[3] = v;
+    }
+    get e() {
+      return this.m[4];
+    }
+    set e(v) {
+      this.m[4] = v;
+    }
+    get f() {
+      return this.m[5];
+    }
+    set f(v) {
+      this.m[5] = v;
+    }
   }
   (globalThis as Record<string, unknown>).DOMMatrix = MinimalDOMMatrix;
 }

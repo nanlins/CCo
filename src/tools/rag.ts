@@ -27,7 +27,12 @@ export class RagService {
   private indexer: DocIndexer;
 
   constructor(private opts: RagServiceOptions) {
-    this.indexer = new DocIndexer({ root: opts.root, embedder: opts.embedder, store: opts.store, stateFile: opts.stateFile });
+    this.indexer = new DocIndexer({
+      root: opts.root,
+      embedder: opts.embedder,
+      store: opts.store,
+      stateFile: opts.stateFile,
+    });
   }
   get root(): string {
     return this.opts.root;
@@ -111,10 +116,14 @@ async function rerankWithLlm(
 ): Promise<Array<{ hit: { id: string; score: number; metadata: Record<string, unknown> }; kw: number }> | null> {
   try {
     const list = candidates
-      .map((c, i) => `${i}. ${String(c.hit.metadata.file ?? '')}:${Number(c.hit.metadata.startLine ?? 0)} — ${String(c.hit.metadata.text ?? '').slice(0, 200)}`)
+      .map(
+        (c, i) =>
+          `${i}. ${String(c.hit.metadata.file ?? '')}:${Number(c.hit.metadata.startLine ?? 0)} — ${String(c.hit.metadata.text ?? '').slice(0, 200)}`,
+      )
       .join('\n');
     const result = await llm.complete({
-      system: 'You rerank retrieved passages by relevance to the query. Keep only the most relevant, in order. Reply with JSON.',
+      system:
+        'You rerank retrieved passages by relevance to the query. Keep only the most relevant, in order. Reply with JSON.',
       messages: [{ role: 'user', content: `Query: ${query}\nCandidates:\n${list}` }],
       tools: [],
       maxTokens: 200,
@@ -157,7 +166,8 @@ export function ragTools(deps: RagToolDeps): ToolDef[] {
     {
       schema: {
         name: 'search_docs',
-        description: '在文档中做语义检索（向量 + 关键词混合），返回带文件行号引用的内容块。回答引用问题时先用它，找不到就说找不到。',
+        description:
+          '在文档中做语义检索（向量 + 关键词混合），返回带文件行号引用的内容块。回答引用问题时先用它，找不到就说找不到。',
         input_schema: {
           type: 'object',
           properties: {

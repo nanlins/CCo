@@ -90,7 +90,7 @@ test('Stop blockingError 注入自纠后继续', async () => {
     ],
   });
   let first = true;
-  h.hooks.register('Stop', (p) => {
+  h.hooks.register('Stop', (_p) => {
     if (first) {
       first = false;
       return { blockingError: '回答不完整，需要包含验证步骤' };

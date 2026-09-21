@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { EmbeddingProvider } from './embedding.js';
 import type { VectorStore } from './vectorStore.js';
-import { type DocChunk, collectDocs, chunkFile } from './chunker.js';
+import { collectDocs, chunkFile } from './chunker.js';
 
 export interface IndexerOptions {
   root: string;

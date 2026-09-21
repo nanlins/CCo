@@ -22,8 +22,7 @@ export function todoTool(): ToolDef {
   return {
     schema: {
       name: 'TodoWrite',
-      description:
-        '维护当前任务的清单。每次调用都要写完整列表（所有条目）。',
+      description: '维护当前任务的清单。每次调用都要写完整列表（所有条目）。',
       input_schema: {
         type: 'object',
         properties: {

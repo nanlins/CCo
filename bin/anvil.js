@@ -18,23 +18,17 @@ const userCwd = process.cwd();
 
 /* 使用 tsx 启动（开发模式，兼容源码）或编译后的 dist（生产模式） */
 const useDist = process.env.ANVIL_USE_DIST === '1';
-const entry = useDist
-  ? path.join(PROJECT_ROOT, 'dist', 'main.js')
-  : path.join(PROJECT_ROOT, 'src', 'main.ts');
+const entry = useDist ? path.join(PROJECT_ROOT, 'dist', 'main.js') : path.join(PROJECT_ROOT, 'src', 'main.ts');
 
 /* cwd 用项目根（解析 tsx/node_modules），工作区用用户当前目录 */
-const child = spawn(
-  process.execPath,
-  useDist ? [entry] : ['--import', 'tsx', entry],
-  {
-    cwd: PROJECT_ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      HARNESS_CWD: userCwd,
-    },
+const child = spawn(process.execPath, useDist ? [entry] : ['--import', 'tsx', entry], {
+  cwd: PROJECT_ROOT,
+  stdio: 'inherit',
+  env: {
+    ...process.env,
+    HARNESS_CWD: userCwd,
   },
-);
+});
 
 child.on('exit', (code, signal) => {
   if (signal) process.kill(process.pid, signal);

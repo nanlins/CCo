@@ -34,7 +34,9 @@ test('边界: 空用户输入不崩溃', async () => {
 test('边界: 特殊字符文件名', async () => {
   const h = makeHarness({
     script: [
-      { blocks: [{ type: 'tool_use', name: 'write_file', input: { path: '测试 文件 & (1).txt', content: 'unicode' } }] },
+      {
+        blocks: [{ type: 'tool_use', name: 'write_file', input: { path: '测试 文件 & (1).txt', content: 'unicode' } }],
+      },
       { blocks: [{ type: 'text', text: 'done' }] },
     ],
   });
@@ -112,12 +114,11 @@ test('并发: 多个任务并发 claim 不冲突', async () => {
   const t3 = tasks.create('task3');
 
   // 并发 claim 三个不同任务
-  const results = await Promise.all([
-    tasks.claim(t1.id, 'a'),
-    tasks.claim(t2.id, 'b'),
-    tasks.claim(t3.id, 'c'),
-  ]);
-  assert.equal(results.every((r) => r.startsWith('Claimed')), true);
+  const results = await Promise.all([tasks.claim(t1.id, 'a'), tasks.claim(t2.id, 'b'), tasks.claim(t3.id, 'c')]);
+  assert.equal(
+    results.every((r) => r.startsWith('Claimed')),
+    true,
+  );
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -158,8 +159,12 @@ test('并发: 消息总线多 agent 并发收发', async () => {
   bus.ensureAgent('bob');
   // 并发发送多消息
   await Promise.all([
-    (async () => { for (let i = 0; i < 5; i++) bus.send({ type: 'message', from: 'lead', to: 'alice', text: `msg-${i}` }); })(),
-    (async () => { for (let i = 0; i < 5; i++) bus.send({ type: 'message', from: 'lead', to: 'bob', text: `msg-${i}` }); })(),
+    (async () => {
+      for (let i = 0; i < 5; i++) bus.send({ type: 'message', from: 'lead', to: 'alice', text: `msg-${i}` });
+    })(),
+    (async () => {
+      for (let i = 0; i < 5; i++) bus.send({ type: 'message', from: 'lead', to: 'bob', text: `msg-${i}` });
+    })(),
   ]);
   const alice = await bus.drain('alice');
   const bob = await bus.drain('bob');
@@ -174,7 +179,15 @@ test('集成: 完整链路 写入→读取→编辑→验证', async () => {
   const h = makeHarness({
     script: [
       { blocks: [{ type: 'tool_use', name: 'write_file', input: { path: 'app.js', content: 'let x = 1;' } }] },
-      { blocks: [{ type: 'tool_use', name: 'edit_file', input: { path: 'app.js', old_text: 'let x = 1;', new_text: 'let x = 2;' } }] },
+      {
+        blocks: [
+          {
+            type: 'tool_use',
+            name: 'edit_file',
+            input: { path: 'app.js', old_text: 'let x = 1;', new_text: 'let x = 2;' },
+          },
+        ],
+      },
       { blocks: [{ type: 'tool_use', name: 'read_file', input: { path: 'app.js' } }] },
       { blocks: [{ type: 'text', text: 'complete' }] },
     ],
@@ -193,7 +206,12 @@ test('集成: TodoWrite 状态保持', async () => {
           {
             type: 'tool_use',
             name: 'TodoWrite',
-            input: { todos: [{ content: 'step1', status: 'in_progress', activeForm: 'doing' }, { content: 'step2', status: 'pending', activeForm: 'todo' }] },
+            input: {
+              todos: [
+                { content: 'step1', status: 'in_progress', activeForm: 'doing' },
+                { content: 'step2', status: 'pending', activeForm: 'todo' },
+              ],
+            },
           },
         ],
       },

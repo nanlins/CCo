@@ -26,6 +26,18 @@ export class SessionManager {
     fs.mkdirSync(this.transcriptsDir, { recursive: true });
   }
 
+  /** 读取快照文件中的 messages（兼容 v2 快照对象与旧版纯数组）。 */
+  private readMessages(file: string): Message[] | null {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { messages?: Message[] } | Message[];
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)) return parsed.messages;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 列出所有会话。 */
   list(): SessionInfo[] {
     if (!fs.existsSync(this.transcriptsDir)) return [];
@@ -33,18 +45,15 @@ export class SessionManager {
     for (const file of fs.readdirSync(this.transcriptsDir)) {
       if (!file.endsWith('.messages.json')) continue;
       const sessionId = file.replace('.messages.json', '');
-      try {
-        const messages = JSON.parse(fs.readFileSync(path.join(this.transcriptsDir, file), 'utf8')) as Message[];
-        const lastMsg = messages.length > 0 ? this.extractText(messages[messages.length - 1]) : undefined;
-        sessions.push({
-          id: sessionId,
-          createdAt: fs.statSync(path.join(this.transcriptsDir, file)).mtimeMs,
-          messageCount: messages.length,
-          lastMessage: lastMsg?.slice(0, 100),
-        });
-      } catch {
-        /* 损坏文件跳过 */
-      }
+      const messages = this.readMessages(path.join(this.transcriptsDir, file));
+      if (!messages) continue; // 损坏文件跳过
+      const lastMsg = messages.length > 0 ? this.extractText(messages[messages.length - 1]) : undefined;
+      sessions.push({
+        id: sessionId,
+        createdAt: fs.statSync(path.join(this.transcriptsDir, file)).mtimeMs,
+        messageCount: messages.length,
+        lastMessage: lastMsg?.slice(0, 100),
+      });
     }
     return sessions.sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -53,11 +62,7 @@ export class SessionManager {
   load(sessionId: string): Message[] | null {
     const file = path.join(this.transcriptsDir, `${sessionId}.messages.json`);
     if (!fs.existsSync(file)) return null;
-    try {
-      return JSON.parse(fs.readFileSync(file, 'utf8')) as Message[];
-    } catch {
-      return null;
-    }
+    return this.readMessages(file);
   }
 
   /** 保存会话消息。 */

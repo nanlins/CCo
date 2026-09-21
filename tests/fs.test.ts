@@ -123,10 +123,12 @@ test('safePath: extraReadRoots allows cross-dir reads, writes stay workspace-onl
     );
     assert.equal(out, 'external');
     // 读：未配置则拒绝
-    const denied = await tool('read_file').executor({ path: path.join(otherRoot, 'ext.md') }, ctx(workdir)).then(
-      () => 'no-error',
-      (e: Error) => e.message,
-    );
+    const denied = await tool('read_file')
+      .executor({ path: path.join(otherRoot, 'ext.md') }, ctx(workdir))
+      .then(
+        () => 'no-error',
+        (e: Error) => e.message,
+      );
     assert.ok(String(denied).includes('escapes workspace'));
     // 写：即使配了 extraReadRoots 也不允许越出工作区（executor 直接抛错）
     const writeOut = await tool('write_file')

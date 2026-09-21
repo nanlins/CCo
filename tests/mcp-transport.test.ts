@@ -46,7 +46,9 @@ test('discoverOAuth: 无效 URL 返回 null', async () => {
 test('StdioTransport: onNotification 注册回调', () => {
   const t = new StdioTransport('node', ['-v']);
   let called = false;
-  t.onNotification(() => { called = true; });
+  t.onNotification(() => {
+    called = true;
+  });
   assert.equal(called, false); // 未连接不触发
 });
 

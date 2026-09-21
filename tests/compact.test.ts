@@ -2,12 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  compactMessages,
-  compactHistory,
-  snipCompact,
-  microCompact,
-} from '../src/core/compact.js';
+import { compactMessages, compactHistory, snipCompact, microCompact } from '../src/core/compact.js';
 import { ReadFileState } from '../src/core/readFileState.js';
 import { fsTools } from '../src/tools/fs.js';
 import { MockLlm } from '../src/llm/mock.js';
@@ -25,7 +20,14 @@ test('snip keeps head and tail and never splits tool_use/tool_result pairs', () 
   messages.push(msg('assistant', [{ type: 'tool_use', id: 't1', name: 'bash', input: { command: 'echo 1' } }]));
   messages.push(msg('user', [{ type: 'tool_result', tool_use_id: 't1', content: 'out 1' }]));
   for (let i = 4; i < 58; i++) messages.push(msg('user', `m${i}`));
-  const out = snipCompact(messages, { maxMessages: 50, keepHead: 3, keepRecentToolResults: 3, maxToolResultChars: 200000, thresholdChars: 50000, persistDir: '.' });
+  const out = snipCompact(messages, {
+    maxMessages: 50,
+    keepHead: 3,
+    keepRecentToolResults: 3,
+    maxToolResultChars: 200000,
+    thresholdChars: 50000,
+    persistDir: '.',
+  });
   assert.ok(out.length <= 52, `out.length=${out.length}`); // 边界保护最多 +2
   const placeholder = out.find((m) => typeof m.content === 'string' && m.content.includes('snipped'));
   assert.ok(placeholder, 'expected snip placeholder');
@@ -42,11 +44,17 @@ test('snip keeps head and tail and never splits tool_use/tool_result pairs', () 
         // 只校验"保留侧"的配对：head 内的 tool_use 必须有对应 result 也在 head 内
         if (i < headEnd && b.type === 'tool_use') {
           const next = out[i + 1];
-          assert.ok(Array.isArray(next?.content) && next.content.some((x) => x.type === 'tool_result'), `orphan tool_use at ${i}`);
+          assert.ok(
+            Array.isArray(next?.content) && next.content.some((x) => x.type === 'tool_result'),
+            `orphan tool_use at ${i}`,
+          );
         }
         if (i >= tailStart && b.type === 'tool_result') {
           const prev = out[i - 1];
-          assert.ok(Array.isArray(prev?.content) && prev.content.some((x) => x.type === 'tool_use'), `orphan tool_result at ${i}`);
+          assert.ok(
+            Array.isArray(prev?.content) && prev.content.some((x) => x.type === 'tool_use'),
+            `orphan tool_result at ${i}`,
+          );
         }
       }
     }
@@ -60,7 +68,14 @@ test('snip terminates on pure tool-pair sequences (stress)', () => {
     messages.push(msg('assistant', [{ type: 'tool_use', id: `t${i}`, name: 'bash', input: { command: `echo ${i}` } }]));
     messages.push(msg('user', [{ type: 'tool_result', tool_use_id: `t${i}`, content: `out ${i}` }]));
   }
-  const out = snipCompact(messages, { maxMessages: 50, keepHead: 3, keepRecentToolResults: 3, maxToolResultChars: 200000, thresholdChars: 50000, persistDir: '.' });
+  const out = snipCompact(messages, {
+    maxMessages: 50,
+    keepHead: 3,
+    keepRecentToolResults: 3,
+    maxToolResultChars: 200000,
+    thresholdChars: 50000,
+    persistDir: '.',
+  });
   assert.ok(out.length < messages.length, 'should compact something');
 });
 
@@ -69,7 +84,14 @@ test('micro keeps recent 3 tool results and compacts the rest', () => {
   for (let i = 0; i < 5; i++) {
     messages.push(msg('user', [{ type: 'tool_result', tool_use_id: `r${i}`, content: 'x'.repeat(500) }]));
   }
-  const out = microCompact(messages, { keepRecentToolResults: 3, maxMessages: 50, keepHead: 3, maxToolResultChars: 200000, thresholdChars: 50000, persistDir: '.' });
+  const out = microCompact(messages, {
+    keepRecentToolResults: 3,
+    maxMessages: 50,
+    keepHead: 3,
+    maxToolResultChars: 200000,
+    thresholdChars: 50000,
+    persistDir: '.',
+  });
   const blocks = out.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
   const compacted = blocks.filter((b) => b.type === 'tool_result' && b.content.includes('compacted'));
   const full = blocks.filter((b) => b.type === 'tool_result' && b.content.length > 400);
@@ -106,9 +128,7 @@ test('compactHistory produces summary message + tail', async () => {
   const llm = new MockLlm({
     script: [
       {
-        blocks: [
-          { type: 'text', text: '<analysis>a</analysis>\n<summary>THE SUMMARY</summary>' },
-        ],
+        blocks: [{ type: 'text', text: '<analysis>a</analysis>\n<summary>THE SUMMARY</summary>' }],
       },
     ],
   });
@@ -304,10 +324,7 @@ test('readFileState: L3 落盘移除后，重读返回完整内容而非 stub（
 
     // 重读：内容应被恢复，而不是返回 stub
     const readDef = fsTools().find((t) => t.schema.name === 'read_file')!;
-    const out = await readDef.executor(
-      { path: 'doc.md' },
-      { workdir: dir, readFileState: rfs } as never,
-    );
+    const out = await readDef.executor({ path: 'doc.md' }, { workdir: dir, readFileState: rfs } as never);
     assert.ok(typeof out === 'string' && out.includes('D'.repeat(100)), '重读应返回完整内容');
     assert.ok(!out.includes('[File unchanged since last read]'));
     assert.ok(!rfs.isEvicted(file), '重读后应清除 evicted 标记');

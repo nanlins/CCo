@@ -10,15 +10,40 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Message } from '../types.js';
+import type { Message, TodoItem } from '../types.js';
+
+/** 会话完整快照（v2）：messages + todos + readFileState + session id，供 /resume 全量恢复。 */
+export interface SessionSnapshot {
+  version: 2;
+  sessionId: string;
+  savedAt: string;
+  messages: Message[];
+  todos?: TodoItem[];
+  /** readFileState 已读文件路径（恢复后重读按磁盘 mtime/size 校验）。 */
+  readPaths?: string[];
+  /** 预算耗尽/配额中断时保存的最终/部分报告。 */
+  finalReport?: string;
+  /** run() 终止状态：completed / budget_exhausted / quota_exhausted / rate_limited / cancelled / error。 */
+  status?: string;
+  /** 跨压缩的会话摘要（供 /retry 基于摘要续跑，避免重放全部消息再次收费）。 */
+  sessionMemory?: string;
+}
 
 export class Transcript {
   private file: string;
   private lines: Array<Record<string, unknown>> = [];
 
-  constructor(private dir: string, private sessionId: string) {
+  constructor(
+    private dir: string,
+    private sessionId: string,
+  ) {
     this.file = path.join(dir, `${sessionId}.jsonl`);
     fs.mkdirSync(dir, { recursive: true });
+  }
+
+  /** 快照目录（/resume 恢复时用于重建 Transcript）。 */
+  getDir(): string {
+    return this.dir;
   }
 
   log(event: string, data?: Record<string, unknown>): void {
@@ -43,16 +68,33 @@ export class Transcript {
     fs.writeFileSync(this.snapshotFile(), JSON.stringify(messages, null, 2), 'utf8');
   }
 
-  /** 读取快照；不存在返回 null。 */
-  loadSnapshot(): Message[] | null {
+  /** 保存完整会话快照（messages + todos + readPaths，v2 格式）。 */
+  saveSessionSnapshot(snap: SessionSnapshot): void {
+    fs.writeFileSync(this.snapshotFile(), JSON.stringify(snap, null, 2), 'utf8');
+  }
+
+  /** 读取快照；兼容旧格式（纯 messages 数组）；不存在返回 null。 */
+  loadSessionSnapshot(): SessionSnapshot | null {
     const f = this.snapshotFile();
     if (!fs.existsSync(f)) return null;
     try {
-      const parsed = JSON.parse(fs.readFileSync(f, 'utf8')) as Message[];
-      return Array.isArray(parsed) ? parsed : null;
+      const parsed = JSON.parse(fs.readFileSync(f, 'utf8')) as SessionSnapshot | Message[];
+      if (Array.isArray(parsed)) {
+        /* 旧格式：仅 messages */
+        return { version: 2, sessionId: this.sessionId, savedAt: '', messages: parsed };
+      }
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)) {
+        return parsed;
+      }
+      return null;
     } catch {
       return null;
     }
+  }
+
+  /** 读取快照；不存在返回 null（兼容旧调用）。 */
+  loadSnapshot(): Message[] | null {
+    return this.loadSessionSnapshot()?.messages ?? null;
   }
 }
 

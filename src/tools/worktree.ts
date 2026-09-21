@@ -107,8 +107,7 @@ export function worktreeTools(mgr: WorktreeManager, tasks?: TaskSystem): ToolDef
           required: ['name'],
         },
       },
-      executor: async (args: Record<string, unknown>): Promise<string> =>
-        mgr.remove(String(args.name ?? '')),
+      executor: async (args: Record<string, unknown>): Promise<string> => mgr.remove(String(args.name ?? '')),
     },
     {
       schema: {

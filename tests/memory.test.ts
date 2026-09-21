@@ -45,10 +45,7 @@ test('autoExtract saves durable facts from conversation tail', async () => {
       },
     ],
   });
-  const saved = await store.autoExtract(
-    [{ role: 'user', content: 'please use tabs from now on' }],
-    llm,
-  );
+  const saved = await store.autoExtract([{ role: 'user', content: 'please use tabs from now on' }], llm);
   assert.equal(saved, 1);
   assert.ok(store.catalog().includes('use-tabs'));
   fs.rmSync(dir, { recursive: true, force: true });
@@ -116,9 +113,7 @@ test('consolidate: LLM 去重合并记忆', async () => {
             type: 'tool_use',
             name: 'consolidate_memories',
             input: {
-              memories: [
-                { name: 'tabs-merged', description: 'merged fact', body: 'always use tabs' },
-              ],
+              memories: [{ name: 'tabs-merged', description: 'merged fact', body: 'always use tabs' }],
             },
           },
         ],

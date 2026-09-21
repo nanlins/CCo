@@ -8,12 +8,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from '../config.js';
-import type {
-  AssistantBlock,
-  ContentBlock,
-  Message,
-  ToolSchema,
-} from '../types.js';
+import type { AssistantBlock, ContentBlock, Message, ToolSchema } from '../types.js';
 
 export interface StructuredOutput {
   /** 内部工具名（如 extract_memories），用于强制模型输出 JSON。 */
@@ -31,8 +26,10 @@ export interface LlmCallParams {
   maxTokens: number;
   model?: string;
   onEvent?: (event: { type: 'text'; text: string }) => void;
-  /** 结构化输出：设置后通过 tool_choice 强制模型返回 JSON（兼容性好）。 */
+  /** 结构化输出：设置后通过 tool_choice 强制模型输出 JSON（兼容性好）。 */
   structured?: StructuredOutput;
+  /** 取消信号（Ctrl+C）：中止正在进行的 HTTP 流，而不是等下一轮。 */
+  abortSignal?: AbortSignal;
 }
 
 export interface LlmResult {
@@ -92,21 +89,21 @@ export class AnthropicLlm implements LlmClient {
           cache_control: { type: 'ephemeral' },
         }));
 
-    const stream = this.client.messages.stream({
-      model: params.model ?? this.cfg.model,
-      max_tokens: params.maxTokens,
-      system: [
-        { type: 'text', text: params.system, cache_control: { type: 'ephemeral' } },
-      ],
-      messages: toSdkMessages(params.messages),
-      tools: tools as Anthropic.Tool[],
-      ...(isStructured
-        ? { tool_choice: { type: 'tool' as const, name: params.structured!.name } }
-        : {}),
-      ...(this.cfg.temperature !== undefined ? { temperature: this.cfg.temperature } : {}),
-      ...(this.cfg.topP !== undefined ? { top_p: this.cfg.topP } : {}),
-      ...(this.cfg.stopSequences ? { stop_sequences: this.cfg.stopSequences } : {}),
-    });
+    const stream = this.client.messages.stream(
+      {
+        model: params.model ?? this.cfg.model,
+        max_tokens: params.maxTokens,
+        system: [{ type: 'text', text: params.system, cache_control: { type: 'ephemeral' } }],
+        messages: toSdkMessages(params.messages),
+        tools: tools as Anthropic.Tool[],
+        ...(isStructured ? { tool_choice: { type: 'tool' as const, name: params.structured!.name } } : {}),
+        ...(this.cfg.temperature !== undefined ? { temperature: this.cfg.temperature } : {}),
+        ...(this.cfg.topP !== undefined ? { top_p: this.cfg.topP } : {}),
+        ...(this.cfg.stopSequences ? { stop_sequences: this.cfg.stopSequences } : {}),
+      },
+      /* Ctrl+C：中止正在进行的 HTTP 流 */
+      params.abortSignal ? { signal: params.abortSignal } : {},
+    );
 
     stream.on('text', (text: string) => {
       params.onEvent?.({ type: 'text', text });
@@ -158,9 +155,7 @@ function toSdkMessages(messages: Message[]): Anthropic.MessageParam[] {
   });
 }
 
-function normalizeBlocks(
-  blocks: Anthropic.ContentBlock[],
-): AssistantBlock[] {
+function normalizeBlocks(blocks: Anthropic.ContentBlock[]): AssistantBlock[] {
   const out: AssistantBlock[] = [];
   for (const b of blocks) {
     if (b.type === 'text') out.push({ type: 'text', text: b.text });

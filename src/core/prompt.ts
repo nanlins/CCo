@@ -19,12 +19,7 @@ export interface PromptSections {
 }
 
 export function assembleSystemPrompt(s: PromptSections): string {
-  const parts: string[] = [
-    s.base,
-    `Workspace: ${s.workdir}`,
-    `Permission mode: ${s.mode}`,
-    renderToolCatalog(s.tools),
-  ];
+  const parts: string[] = [s.base, `Workspace: ${s.workdir}`, `Permission mode: ${s.mode}`, renderToolCatalog(s.tools)];
   if (s.skills) parts.push(s.skills);
   if (s.memory) parts.push(s.memory);
   const todos = renderTodos(s.todos ?? []);

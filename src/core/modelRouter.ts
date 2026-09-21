@@ -36,18 +36,26 @@ export interface RoutingDecision {
 const SIMPLE_KEYWORDS = /^(列出|查看|读取|显示|搜索|查找|list|show|read|find|search|get|cat|ls|dir)/i;
 
 /* 复杂任务关键词（重构/优化/分析/多文件） */
-const COMPLEX_KEYWORDS = /(重构|优化|分析|设计|架构|review|refactor|optimize|analyze|design|architecture|多文件|跨模块|全面|彻底)/i;
+const COMPLEX_KEYWORDS =
+  /(重构|优化|分析|设计|架构|review|refactor|optimize|analyze|design|architecture|多文件|跨模块|全面|彻底)/i;
 
 /* 只读工具（倾向 flash） */
 const READ_ONLY_TOOLS = new Set([
-  'read_file', 'glob', 'grep', 'list_files', 'web_search', 'web_extractor',
-  'search_docs', 'task_list', 'task_get', 'mcp_list', 'teammate_status',
+  'read_file',
+  'glob',
+  'grep',
+  'list_files',
+  'web_search',
+  'web_extractor',
+  'search_docs',
+  'task_list',
+  'task_get',
+  'mcp_list',
+  'teammate_status',
 ]);
 
 /* 写入工具（倾向 default/pro） */
-const WRITE_TOOLS = new Set([
-  'write_file', 'edit_file', 'delete_file', 'bash',
-]);
+const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'bash']);
 
 export class ModelRouter {
   private config: ModelRouterConfig;

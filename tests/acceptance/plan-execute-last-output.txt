@@ -1,0 +1,39 @@
+verdict: ✅ 先规划再执行：先产出计划，再按计划动手
+
+=== 轨迹 ===
+[计划] [in_progress] 创建 package.json（name=mini-lib, type=commonjs）
+[计划] [pending] 创建 lib/math.js，导出 add(a,b) 与 sub(a,b)
+[计划] [pending] 创建 test/math.test.js，断言 add(1,2)===3 且 sub(5,3)===2，通过时打印 ALL_TESTS_PASSED
+[计划] [pending] 运行 node test/math.test.js 并确认输出 ALL_TESTS_PASSED
+[计划] [pending] 编写 SUMMARY.md，逐条说明 package.json、lib/math.js、test/math.test.js 的作用
+[工具] list_files {"path":".","recursive":true}
+[工具] TodoWrite {"todos":[{"content":"创建 package.json（name=mini-lib, type=commonjs）","status":"i
+[工具] write_file {"path":"package.json","content":"{\n  \"name\": \"mini-lib\",\n  \"version\": \
+[工具] write_file {"path":"lib/math.js","content":"'use strict';\n\n/**\n * Returns the sum of two
+[工具] write_file {"path":"test/math.test.js","content":"'use strict';\n\nconst assert = require('
+[工具] TodoWrite {"todos":[{"activeForm":"创建 package.json","content":"创建 package.json（name=mini-l
+[工具] bash {"command":"node test/math.test.js"}
+[工具] TodoWrite {"todos":[{"activeForm":"创建 package.json","content":"创建 package.json（name=mini-l
+[工具] write_file {"content":"# mini-lib — 最小 Node 工具库\n\n一个极简的 CommonJS Node.js 工具库，包含两个数学函数及其单元测
+[工具] list_files {"path":".","recursive":true}
+[工具] bash {"command":"npm test"}
+[工具] TodoWrite {"todos":[{"activeForm":"创建 package.json","content":"创建 package.json（name=mini-l
+
+=== 最终输出 ===
+全部 5 步完成并已验证 ✅
+
+**最终结构**
+```
+mini-lib/
+├── package.json        # name=mini-lib, type=commonjs, main=lib/math.js, npm test 脚本
+├── lib/math.js         # 导出 add(a,b) 与 sub(a,b)
+├── test/math.test.js   # node:assert 断言 + 通过时打印 ALL_TESTS_PASSED
+└── SUMMARY.md          # 逐条说明每个文件的作用与验证结果
+```
+
+**验证结果**
+- `node test/math.test.js` → 输出 `ALL_TESTS_PASSED`
+- `npm test`（走 package.json 的 scripts）→ 同样输出 `ALL_TESTS_PASSED`
+- 两个断言：`add(1, 2) === 3` ✅、`sub(5, 3) === 2` ✅，退出码 0
+
+SUMMARY.md 已逐条说明 package.json（包元数据/入口/type）、lib/math.js（核心实现）、test/math.test.js（零依赖断言测试）的作用与验证结果。仓库起初为空，无既有 git 历史，故未做提交。

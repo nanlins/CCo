@@ -131,7 +131,11 @@ export class MemoryStore {
   async autoExtract(messages: Message[], llm: LlmClient, maxTokens = 1000): Promise<number> {
     const tail = messages.slice(-12);
     const serialized = tail
-      .map((m) => (typeof m.content === 'string' ? m.content : m.content.map((b) => ('text' in b ? b.text : `[${b.type}]`)).join('\n')))
+      .map((m) =>
+        typeof m.content === 'string'
+          ? m.content
+          : m.content.map((b) => ('text' in b ? b.text : `[${b.type}]`)).join('\n'),
+      )
       .join('\n---\n');
     const system =
       'You extract durable user preferences and project facts from a conversation. ' +
@@ -165,9 +169,7 @@ export class MemoryStore {
       },
     });
     /* 结构化优先；同一响应的文本 JSON 兜底（兼容不支持 tool_choice 的端点）。 */
-    let raw: unknown[] = Array.isArray(result.structured?.memories)
-      ? (result.structured.memories as unknown[])
-      : [];
+    let raw: unknown[] = Array.isArray(result.structured?.memories) ? (result.structured.memories as unknown[]) : [];
     if (raw.length === 0) {
       raw = parseJsonArray(extractText(result));
     }
@@ -216,14 +218,12 @@ export class MemoryStore {
     const before = entries.length;
     if (before < 2) return { before, after: before };
 
-    const serialized = entries
-      .map((e) => `- ${e.name}: ${e.description}\n  ${e.body.slice(0, 500)}`)
-      .join('\n');
+    const serialized = entries.map((e) => `- ${e.name}: ${e.description}\n  ${e.body.slice(0, 500)}`).join('\n');
     const system =
       'You consolidate a memory store. Deduplicate, merge contradictions (keep the newer/more specific), ' +
       'drop outdated entries. Names must be lowercase kebab-case. Return the final list.';
 
-    let raw: unknown[] = [];
+    let raw: unknown[];
     const result = await llm.complete({
       system,
       messages: [{ role: 'user', content: `Existing memories:\n${serialized}` }],
@@ -304,7 +304,10 @@ function stripFrontmatter(raw: string): string {
 /* ---------- LLM 输出解析 ---------- */
 
 function extractText(result: { content: Array<{ type: string; text?: string }> }): string {
-  return result.content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
+  return result.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text ?? '')
+    .join('');
 }
 
 function parseJsonArray(text: string): unknown[] {

@@ -8,7 +8,8 @@ test('web_extractor: 拒绝非 http/https', async () => {
 });
 
 test('htmlToText: 去除标签与脚本，保留正文', () => {
-  const html = '<html><head><title>x</title></head><body><script>alert(1)</script><h1>标题</h1><p>正文内容</p></body></html>';
+  const html =
+    '<html><head><title>x</title></head><body><script>alert(1)</script><h1>标题</h1><p>正文内容</p></body></html>';
   const text = htmlToTextForTest(html);
   assert.ok(text.includes('标题'));
   assert.ok(text.includes('正文内容'));

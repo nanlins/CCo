@@ -27,7 +27,7 @@ export class LlmHttpError extends Error {
 const CONTEXT_OVERFLOW_RX =
   /(maximum context length|context_length_exceeded|prompt is too long|range of input length|too many tokens|exceeds? (the )?(model's )?(maximum|context))/i;
 
-export function classifyHttpError(status: number, body: string): LlmHttpError {
+export function classifyHttpError(status: number, body: string, retryAfterMs?: number): LlmHttpError {
   let message = body;
   let apiType: string | undefined;
   try {
@@ -37,8 +37,14 @@ export function classifyHttpError(status: number, body: string): LlmHttpError {
   } catch {
     // 非 JSON 响应体，直接用原文
   }
+  /* 空响应体（常见于 404/网关错误）时补上状态码，避免错误消息为空只剩裸 "Error" */
+  if (!message.trim()) message = `HTTP ${status} (empty response body)`;
   const type = CONTEXT_OVERFLOW_RX.test(message) ? 'prompt_too_long' : apiType;
-  return new LlmHttpError(status, message, type);
+  const err = new LlmHttpError(status, message, type);
+  if (retryAfterMs !== undefined && retryAfterMs > 0) {
+    (err as LlmHttpError & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
+  }
+  return err;
 }
 
 /* ---------- 消息/工具转换（纯函数，可单测） ---------- */
@@ -62,7 +68,10 @@ export function toOpenAiMessages(system: string, messages: Message[]): OpenAiMes
         .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
         .map((b) => b.text)
         .join('');
-      const uses = m.content.filter((b): b is { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } => b.type === 'tool_use');
+      const uses = m.content.filter(
+        (b): b is { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } =>
+          b.type === 'tool_use',
+      );
       if (uses.length > 0) {
         out.push({
           role: 'assistant',
@@ -135,7 +144,8 @@ export class StreamAccumulator {
 
   /** 喂入一个已解析的 chunk JSON 对象；返回本次新增的文本增量。 */
   feed(chunk: Record<string, unknown>): string {
-    const choices = chunk.choices as Array<{ delta?: Record<string, unknown>; finish_reason?: string | null }> | undefined;
+    const choices = chunk.choices as
+      Array<{ delta?: Record<string, unknown>; finish_reason?: string | null }> | undefined;
     const choice = choices?.[0];
     let deltaText = '';
     if (choice?.delta) {
@@ -150,7 +160,8 @@ export class StreamAccumulator {
           const acc = this.toolCalls.get(index) ?? { id: '', name: '', arguments: '' };
           if (typeof tc.id === 'string') acc.id = tc.id;
           const fn = tc.function as { name?: string; arguments?: string } | undefined;
-          if (fn?.name) acc.name += fn.name;
+          /* 名称首次赋值：某些 provider 会在后续 chunk 重复下发 name，若用 += 会导致名称重复 */
+          if (fn?.name && !acc.name) acc.name = fn.name;
           if (fn?.arguments) acc.arguments += fn.arguments;
           this.toolCalls.set(index, acc);
         }
@@ -166,13 +177,18 @@ export class StreamAccumulator {
     const out: AssistantBlock[] = [];
     if (this.text) out.push({ type: 'text', text: this.text });
     for (const [, acc] of [...this.toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
-      let input: Record<string, unknown> = {};
+      let input: Record<string, unknown>;
       try {
         input = acc.arguments.trim() ? (JSON.parse(acc.arguments) as Record<string, unknown>) : {};
       } catch {
         input = { _raw_arguments: acc.arguments };
       }
-      out.push({ type: 'tool_use', id: acc.id || `oai_call_${Math.random().toString(36).slice(2, 10)}`, name: acc.name, input });
+      out.push({
+        type: 'tool_use',
+        id: acc.id || `oai_call_${Math.random().toString(36).slice(2, 10)}`,
+        name: acc.name,
+        input,
+      });
     }
     return out;
   }
@@ -234,7 +250,7 @@ export class OpenAiLlm implements LlmClient {
     if (this.cfg.topP !== undefined) body.top_p = this.cfg.topP;
     if (this.cfg.stopSequences) body.stop = this.cfg.stopSequences;
 
-    const acc = await this.streamRequest(body, params.onEvent);
+    const acc = await this.streamRequest(body, params.onEvent, params.abortSignal);
     const blocks = acc.blocks();
 
     let structured: Record<string, unknown> | undefined;
@@ -261,13 +277,18 @@ export class OpenAiLlm implements LlmClient {
   private async streamRequest(
     body: Record<string, unknown>,
     onEvent?: (e: { type: 'text'; text: string }) => void,
+    abortSignal?: AbortSignal,
   ): Promise<StreamAccumulator> {
     const url = `${this.cfg.openaiBaseUrl.replace(/\/$/, '')}/chat/completions`;
     let lastErr: unknown;
 
     for (let attempt = 0; attempt <= NETWORK_RETRIES; attempt++) {
+      /* 外部取消（Ctrl+C）优先：已中止则直接抛出，不再发起请求 */
+      if (abortSignal?.aborted) throw new Error('aborted');
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const onExternalAbort = (): void => controller.abort();
+      abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
       try {
         const resp = await fetch(url, {
           method: 'POST',
@@ -280,7 +301,11 @@ export class OpenAiLlm implements LlmClient {
         });
         if (!resp.ok) {
           const text = await resp.text().catch(() => '');
-          throw classifyHttpError(resp.status, text);
+          /* 解析 Retry-After（秒），传给 classifyHttpError 以便退避策略使用 */
+          const raHeader = resp.headers.get('retry-after');
+          const raSeconds = raHeader ? Number(raHeader) : NaN;
+          const raMs = Number.isFinite(raSeconds) && raSeconds > 0 ? raSeconds * 1000 : undefined;
+          throw classifyHttpError(resp.status, text, raMs);
         }
         if (!resp.body) throw new LlmHttpError(502, 'empty response body');
 
@@ -299,13 +324,17 @@ export class OpenAiLlm implements LlmClient {
         return acc;
       } catch (err) {
         clearTimeout(timer);
+        abortSignal?.removeEventListener('abort', onExternalAbort);
         lastErr = err;
+        /* 用户取消（Ctrl+C）：直接抛出，不做网络重试（保留原始错误链） */
+        if (abortSignal?.aborted) throw new Error('aborted', { cause: err });
         /* HTTP 错误（带 status）直接抛给 callWithRetry；仅纯网络故障做本地重试 */
         if (err instanceof LlmHttpError) throw err;
         if (attempt >= NETWORK_RETRIES) break;
         await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
       } finally {
         clearTimeout(timer);
+        abortSignal?.removeEventListener('abort', onExternalAbort);
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));

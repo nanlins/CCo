@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: 安装依赖
@@ -25,6 +25,12 @@ jobs:
 
       - name: 类型检查
         run: npm run typecheck
+
+      - name: 代码风格（ESLint）
+        run: npm run lint
+
+      - name: 格式检查（Prettier）
+        run: npm run format:check
 
       - name: 单元测试
         run: npm test

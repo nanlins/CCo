@@ -1,22 +1,80 @@
 /**
  * 文件工具集 —— 全部走 safePath 强约束（比教学版更重投入的安全第一）。
  * glob / grep 用原生 JS 实现（不依赖 shell 的 ls/rg），Windows 下行为一致。
+ *
+ * 符号链接防护：词法 isInside 只能挡 ".."，挡不住工作区内的 symlink/junction。
+ * 所有读写在执行前额外做 realpath 校验：解析路径（不存在时取最近存在的祖先），
+ * 要求解析后的真实位置仍在工作区（或只读白名单根）内；遍历（glob/grep/list）
+ * 一律不跟随 symlink 条目。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { isInside } from '../core/permission.js';
 import { FILE_UNCHANGED_STUB } from '../core/readFileState.js';
+import { isProtectedWritePath, isSecretReadPath, protectedReason } from '../core/protectedPaths.js';
 import type { ToolContext, ToolDef } from '../types.js';
+
+/** real 路径包含关系判断（调用方必须已 realpath 化）。 */
+function realWithin(target: string, anchor: string): boolean {
+  const rel = path.relative(anchor, target);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * realpath 防逃逸：把 resolved（词法上已在某个 root 内）做一次真实解析——
+ * 路径不存在时向上找最近存在的祖先再 realpath，并把不存在的尾部拼回。
+ * 解析结果必须仍落在 roots 之一的 realpath 内，否则说明路径中某个
+ * symlink/junction 组件指向了允许范围之外（例如工作区内链接写到工作区外）。
+ */
+function assertNoSymlinkEscape(resolved: string, roots: string[]): void {
+  let probe = resolved;
+  const tail: string[] = [];
+  for (;;) {
+    let exists: boolean;
+    try {
+      fs.lstatSync(probe);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (exists) break;
+    const parent = path.dirname(probe);
+    if (parent === probe) {
+      throw new Error(`Path escapes workspace (unresolvable): ${resolved}`);
+    }
+    tail.unshift(path.basename(probe));
+    probe = parent;
+  }
+  let realTarget: string;
+  try {
+    realTarget = path.join(fs.realpathSync(probe), ...tail);
+  } catch {
+    throw new Error(`Path escapes workspace (realpath failed): ${resolved}`);
+  }
+  for (const root of roots) {
+    let realRoot: string;
+    try {
+      realRoot = fs.realpathSync(root);
+    } catch {
+      continue; // root 不存在则跳过
+    }
+    if (realWithin(realTarget, realRoot)) return;
+  }
+  throw new Error(`Path escapes workspace via symlink/junction: ${resolved}`);
+}
 
 export function safePath(workdir: string, p: string, extraReadRoots?: string[]): string {
   const resolved = path.resolve(workdir, p);
-  if (isInside(workdir, resolved)) return resolved;
+  const roots: string[] = [];
+  if (isInside(workdir, resolved)) roots.push(workdir);
   /* 只读场景：允许配置（EXTRA_READ_ROOTS）内的额外目录，统一走正门而非 bash 后门。 */
   for (const root of extraReadRoots ?? []) {
-    if (isInside(root, resolved)) return resolved;
+    if (isInside(root, resolved)) roots.push(root);
   }
-  throw new Error(`Path escapes workspace: ${p}`);
+  if (roots.length === 0) throw new Error(`Path escapes workspace: ${p}`);
+  assertNoSymlinkEscape(resolved, roots);
+  return resolved;
 }
 
 function readRoots(ctx: ToolContext): string[] | undefined {
@@ -27,6 +85,7 @@ const readSchema = z.object({
   path: z.string().min(1),
   limit: z.number().int().positive().optional(),
   offset: z.number().int().positive().optional(),
+  lineNumbers: z.boolean().optional(),
 });
 
 const writeSchema = z.object({
@@ -64,9 +123,15 @@ const grepSchema = z.object({
 /* ---------- read / write / edit / delete ---------- */
 
 async function execRead(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-  const p = safePath(ctx.workdir, String(args.path ?? ''), readRoots(ctx));
+  const rawPath = String(args.path ?? '');
+  /* 双重拦截（执行器层）：密钥文件禁止读入上下文 */
+  if (isSecretReadPath(ctx.workdir, rawPath)) {
+    return `Error: 禁止读取密钥文件: ${rawPath}`;
+  }
+  const p = safePath(ctx.workdir, rawPath, readRoots(ctx));
   const limit = typeof args.limit === 'number' ? args.limit : undefined;
   const offset = typeof args.offset === 'number' ? args.offset : 1;
+  const lineNumbers = args.lineNumbers === true;
 
   if (ctx.readFileState && ctx.readFileState.isUnchanged(p)) {
     // 内容已被压缩/落盘移除时，重读必须返回完整内容（否则信息永久丢失）
@@ -90,7 +155,13 @@ async function execRead(args: Record<string, unknown>, ctx: ToolContext): Promis
     return `Error: offset ${offset} beyond end of file (${lines.length} lines)`;
   }
   const slice = limit !== undefined ? lines.slice(start, start + limit) : lines.slice(start);
-  let out = slice.join('\n');
+  let out: string;
+  if (lineNumbers) {
+    /* 证据模式：完整源路径 + 行号前缀（行号=|内容），供报告校验器核对 file:line 引用 */
+    out = `[source: ${p}]\n${slice.map((content, i) => `${start + i + 1}|${content}`).join('\n')}`;
+  } else {
+    out = slice.join('\n');
+  }
   const omitted = lines.length - (start + slice.length);
   if (omitted > 0) {
     out += `\n... (${omitted} more lines; total ${lines.length}; use offset=${start + slice.length + 1} to continue)`;
@@ -101,7 +172,12 @@ async function execRead(args: Record<string, unknown>, ctx: ToolContext): Promis
 }
 
 async function execWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-  const p = safePath(ctx.workdir, String(args.path ?? ''));
+  const rawPath = String(args.path ?? '');
+  /* 双重拦截（执行器层）：权限/信任/密钥状态文件禁止写入 */
+  if (isProtectedWritePath(ctx.workdir, rawPath)) {
+    return `Error: ${protectedReason(rawPath)}`;
+  }
+  const p = safePath(ctx.workdir, rawPath);
   const content = String(args.content ?? '');
   await fs.promises.mkdir(path.dirname(p), { recursive: true });
   await fs.promises.writeFile(p, content, 'utf8');
@@ -109,7 +185,11 @@ async function execWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
 }
 
 async function execEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-  const p = safePath(ctx.workdir, String(args.path ?? ''));
+  const rawPath = String(args.path ?? '');
+  if (isProtectedWritePath(ctx.workdir, rawPath)) {
+    return `Error: ${protectedReason(rawPath)}`;
+  }
+  const p = safePath(ctx.workdir, rawPath);
   const oldText = String(args.old_text ?? '');
   const newText = String(args.new_text ?? '');
   const original = await fs.promises.readFile(p, 'utf8');
@@ -121,7 +201,11 @@ async function execEdit(args: Record<string, unknown>, ctx: ToolContext): Promis
 }
 
 async function execDelete(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-  const p = safePath(ctx.workdir, String(args.path ?? ''));
+  const rawPath = String(args.path ?? '');
+  if (isProtectedWritePath(ctx.workdir, rawPath)) {
+    return `Error: ${protectedReason(rawPath)}`;
+  }
+  const p = safePath(ctx.workdir, rawPath);
   if (!fs.existsSync(p)) return `Error: not found: ${args.path}`;
   await fs.promises.unlink(p);
   return `Deleted ${args.path}`;
@@ -132,20 +216,21 @@ async function execList(args: Record<string, unknown>, ctx: ToolContext): Promis
   const recursive = args.recursive === true;
   const entries = await fs.promises.readdir(p, { withFileTypes: true });
   if (!recursive) {
-    const lines = entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
+    /* 完整源路径（绝对路径，统一正斜杠），便于报告证据定位 */
+    const lines = entries.map((e) => path.join(p, e.name).split(path.sep).join('/') + (e.isDirectory() ? '/' : ''));
     return lines.sort().join('\n') || '(empty)';
   }
   const maxDepth = typeof args.depth === 'number' ? args.depth : 6;
   const lines: string[] = [];
-  await walkBounded(p, p, maxDepth, 1000, lines);
+  await walkBounded(p, maxDepth, 1000, lines);
   lines.sort();
   const capped = lines.slice(0, 1000);
   const suffix = lines.length > capped.length ? `\n... (${lines.length - capped.length} more entries)` : '';
   return (capped.join('\n') || '(empty)') + suffix;
 }
 
-/** 带深度与条目上限的递归遍历（跳过 node_modules/.git 等），结果形如 "src/a.ts"、"docs/"。 */
-async function walkBounded(dir: string, base: string, maxDepth: number, cap: number, out: string[]): Promise<void> {
+/** 带深度与条目上限的递归遍历（跳过 node_modules/.git 等），结果形如完整绝对路径 "…/src/a.ts"、"…/docs/"。 */
+async function walkBounded(dir: string, maxDepth: number, cap: number, out: string[]): Promise<void> {
   if (maxDepth < 0 || out.length >= cap) return;
   let entries;
   try {
@@ -156,13 +241,15 @@ async function walkBounded(dir: string, base: string, maxDepth: number, cap: num
   for (const e of entries) {
     if (out.length >= cap) return;
     if (e.name === 'node_modules' || e.name === '.git' || e.name === '.tasks' || e.name === '.team') continue;
+    /* 安全：不跟随 symlink/junction，防止遍历逃逸出工作区 */
+    if (e.isSymbolicLink()) continue;
     const full = path.join(dir, e.name);
-    const rel = path.relative(base, full).split(path.sep).join('/');
+    const display = full.split(path.sep).join('/');
     if (e.isDirectory()) {
-      out.push(`${rel}/`);
-      await walkBounded(full, base, maxDepth - 1, cap, out);
+      out.push(display + '/');
+      await walkBounded(full, maxDepth - 1, cap, out);
     } else {
-      out.push(rel);
+      out.push(display);
     }
   }
 }
@@ -198,7 +285,12 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
-async function walk(dir: string, base: string, visit: (rel: string, full: string) => void | Promise<void>, depth = 0): Promise<void> {
+async function walk(
+  dir: string,
+  base: string,
+  visit: (rel: string, full: string) => void | Promise<void>,
+  depth = 0,
+): Promise<void> {
   if (depth > 14) return;
   let entries;
   try {
@@ -208,6 +300,8 @@ async function walk(dir: string, base: string, visit: (rel: string, full: string
   }
   for (const e of entries) {
     if (e.name === 'node_modules' || e.name === '.git' || e.name === '.tasks' || e.name === '.team') continue;
+    /* 安全：不跟随 symlink/junction，防止 glob/grep 逃逸出工作区 */
+    if (e.isSymbolicLink()) continue;
     const full = path.join(dir, e.name);
     const rel = path.relative(base, full).split(path.sep).join('/');
     if (e.isDirectory()) {
@@ -241,31 +335,55 @@ async function execGrep(args: Record<string, unknown>, ctx: ToolContext): Promis
   const isFile = fs.existsSync(startFull) && fs.statSync(startFull).isFile();
   const hits: string[] = [];
 
-  const testFile = async (full: string, rel: string) => {
-    let raw: string;
+  /* 资源上限：单文件大小 / 总结果数 / 总读取字节，防 grep 打满上下文 */
+  const GREP_MAX_FILE_BYTES = 2 * 1024 * 1024; // 单文件 2MB
+  const GREP_MAX_RESULTS = 200; // 总结果条数
+  const GREP_MAX_TOTAL_BYTES = 20 * 1024 * 1024; // 累计读取 20MB
+  let totalBytes = 0;
+  let skipped = 0;
+
+  const testFile = async (full: string) => {
+    if (hits.length >= GREP_MAX_RESULTS || totalBytes >= GREP_MAX_TOTAL_BYTES) return;
+    let st: fs.Stats;
     try {
-      raw = await fs.promises.readFile(full, 'utf8');
+      st = fs.statSync(full);
     } catch {
       return;
     }
+    if (st.size > GREP_MAX_FILE_BYTES) {
+      skipped += 1;
+      return;
+    }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(full, 'utf8');
+    } catch {
+      return;
+    }
+    totalBytes += Buffer.byteLength(raw, 'utf8');
     if (raw.includes('\u0000')) return; // binary
     const lines = raw.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const match = rx ? rx.test(line) : line.toLowerCase().includes(needle);
       if (match) {
-        hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 200)}`);
-        if (hits.length >= 200) break;
+        /* 完整源路径（绝对路径，统一正斜杠），供报告校验器核对 file:line 引用 */
+        hits.push(`${full.split(path.sep).join('/')}:${i + 1}: ${line.trim().slice(0, 200)}`);
+        if (hits.length >= GREP_MAX_RESULTS) break;
       }
     }
   };
 
   if (isFile) {
-    await testFile(startFull, startPath);
+    await testFile(startFull);
   } else {
-    await walk(startFull, startFull, (rel, full) => testFile(full, rel));
+    await walk(startFull, startFull, (rel, full) => testFile(full));
   }
-  return hits.length ? hits.join('\n') : '（无匹配）';
+  if (hits.length === 0) return skipped > 0 ? `（无匹配；${skipped} 个超大文件已跳过）` : '（无匹配）';
+  const suffixParts: string[] = [];
+  if (hits.length >= GREP_MAX_RESULTS) suffixParts.push(`结果达到上限 ${GREP_MAX_RESULTS} 条，已截断`);
+  if (skipped > 0) suffixParts.push(`${skipped} 个超大文件已跳过`);
+  return hits.join('\n') + (suffixParts.length ? '\n... (' + suffixParts.join('；') + ')' : '');
 }
 
 /* ---------- 注册 ---------- */
@@ -275,14 +393,18 @@ export function fsTools(): ToolDef[] {
     {
       schema: {
         name: 'read_file',
-        description:
-          '从工作区读取文件。尽量完整读取；确需截断时用 offset+limit 分段读完全部内容，不要只读开头就引用。',
+        description: '从工作区读取文件。尽量完整读取；确需截断时用 offset+limit 分段读完全部内容，不要只读开头就引用。',
         input_schema: {
           type: 'object',
           properties: {
             path: { type: 'string', description: '相对工作区的路径' },
             limit: { type: 'integer', description: '最多读取的行数' },
             offset: { type: 'integer', description: '起始行号（从 1 开始），与 limit 配合分段读取' },
+            lineNumbers: {
+              type: 'boolean',
+              description: 'true 时返回完整源路径 + 行号前缀（行号|内容），用于报告证据',
+              default: false,
+            },
           },
           required: ['path'],
         },
@@ -358,7 +480,8 @@ export function fsTools(): ToolDef[] {
     {
       schema: {
         name: 'glob',
-        description: '按 glob 模式查找文件（支持 * ? **；`**/` 匹配零或多层目录，docs/**/*.md 可命中 docs 根下的 md）。',
+        description:
+          '按 glob 模式查找文件（支持 * ? **；`**/` 匹配零或多层目录，docs/**/*.md 可命中 docs 根下的 md）。',
         input_schema: {
           type: 'object',
           properties: { pattern: { type: 'string', description: '例如 src/**/*.ts 或 docs/**/*.md' } },

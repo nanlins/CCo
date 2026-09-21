@@ -29,10 +29,9 @@ test('classify: unsafe 判定转审批', async () => {
 });
 
 test('classify: 连续 unsafe 达阈值后回退 skip（人工接管）', async () => {
-  const yolo = makeYolo(
-    [{ verdict: 'unsafe' }, { verdict: 'unsafe' }, { verdict: 'unsafe' }, { verdict: 'unsafe' }],
-    { maxConsecutiveUnsafe: 3 },
-  );
+  const yolo = makeYolo([{ verdict: 'unsafe' }, { verdict: 'unsafe' }, { verdict: 'unsafe' }, { verdict: 'unsafe' }], {
+    maxConsecutiveUnsafe: 3,
+  });
   assert.equal(await yolo.classify('bash', { command: 'a' }, '/tmp'), 'unsafe');
   assert.equal(await yolo.classify('bash', { command: 'b' }, '/tmp'), 'unsafe');
   assert.equal(await yolo.classify('bash', { command: 'c' }, '/tmp'), 'unsafe');
@@ -43,9 +42,7 @@ test('classify: 相同输入命中缓存（不重复调 LLM）', async () => {
   const llm = new MockLlm({
     script: [
       {
-        blocks: [
-          { type: 'tool_use', name: 'classify_permission', input: { verdict: 'safe', reason: 'x' } },
-        ],
+        blocks: [{ type: 'tool_use', name: 'classify_permission', input: { verdict: 'safe', reason: 'x' } }],
       },
     ],
   });

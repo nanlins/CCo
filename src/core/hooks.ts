@@ -58,7 +58,13 @@ export interface HookResult {
 }
 
 export type HookCallback = (
-  payload: PreToolUsePayload | PostToolUsePayload | { input: string } | { messagesCount: number } | { sessionId: string } | Record<string, unknown>,
+  payload:
+    | PreToolUsePayload
+    | PostToolUsePayload
+    | { input: string }
+    | { messagesCount: number }
+    | { sessionId: string }
+    | Record<string, unknown>,
 ) => HookResult | void | Promise<HookResult | void>;
 
 export class HookRegistry {

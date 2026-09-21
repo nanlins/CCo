@@ -37,7 +37,10 @@ export function readEnvValue(workspaceDir: string, key: string): string {
       if (!trimmed || trimmed.startsWith('#')) continue;
       const eq = trimmed.indexOf('=');
       if (eq > 0 && trimmed.slice(0, eq).trim() === key) {
-        return trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+        return trimmed
+          .slice(eq + 1)
+          .trim()
+          .replace(/^["']|["']$/g, '');
       }
     }
   } catch {

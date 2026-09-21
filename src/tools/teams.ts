@@ -51,9 +51,7 @@ export class MessageBus {
 
   agents(): string[] {
     if (!fs.existsSync(this.root)) return [];
-    return fs
-      .readdirSync(this.root)
-      .filter((d) => fs.statSync(path.join(this.root, d)).isDirectory());
+    return fs.readdirSync(this.root).filter((d) => fs.statSync(path.join(this.root, d)).isDirectory());
   }
 
   send(msg: Omit<TeamMessage, 'id' | 'ts'>): void {
@@ -273,9 +271,7 @@ export class Teammate {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const msgs = await this.opts.bus.drain(this.opts.name);
-      const resp = msgs.find(
-        (m) => m.type === 'permission_response' && m.requestId === requestId,
-      );
+      const resp = msgs.find((m) => m.type === 'permission_response' && m.requestId === requestId);
       if (resp) return resp.text === 'allow';
       await sleep(1000);
     }
@@ -328,18 +324,12 @@ export class Teammate {
         const tasks = this.opts.tasks;
         const claimable = tasks
           .list()
-          .find(
-            (t) =>
-              t.status === 'pending' &&
-              t.blockedBy.every((d) => tasks.get(d)?.status === 'completed'),
-          );
+          .find((t) => t.status === 'pending' && t.blockedBy.every((d) => tasks.get(d)?.status === 'completed'));
         if (claimable) {
           const claim = await tasks.claim(claimable.id, this.opts.name);
           if (claim.startsWith('Claimed')) {
             this.status = 'WORK';
-            await this.opts.agent.run(
-              `Task ${claimable.id}: ${claimable.subject}\n${claimable.description}`,
-            );
+            await this.opts.agent.run(`Task ${claimable.id}: ${claimable.subject}\n${claimable.description}`);
             await tasks.complete(claimable.id);
             continue;
           }

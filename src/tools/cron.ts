@@ -50,19 +50,19 @@ export function cronMatches(expr: string, date: Date): boolean {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return false;
   try {
-  const fMin = parseField(parts[0], 59);
-  const fHour = parseField(parts[1], 23);
-  const fDom = parseField(parts[2], 31);
-  const fMon = parseField(parts[3], 12);
-  const fDow = parseField(parts[4], 6);
-  if (!fieldOk(fMin, date.getMinutes())) return false;
-  if (!fieldOk(fHour, date.getHours())) return false;
-  if (!fieldOk(fMon, date.getMonth() + 1)) return false;
-  const domOk = fDom.any || fDom.values.has(date.getDate());
-  const dowOk = fDow.any || fDow.values.has(date.getDay());
-  if (fDom.any && fDow.any) return true;
-  if (!fDom.any && !fDow.any) return domOk || dowOk;
-  return fDom.any ? dowOk : domOk;
+    const fMin = parseField(parts[0], 59);
+    const fHour = parseField(parts[1], 23);
+    const fDom = parseField(parts[2], 31);
+    const fMon = parseField(parts[3], 12);
+    const fDow = parseField(parts[4], 6);
+    if (!fieldOk(fMin, date.getMinutes())) return false;
+    if (!fieldOk(fHour, date.getHours())) return false;
+    if (!fieldOk(fMon, date.getMonth() + 1)) return false;
+    const domOk = fDom.any || fDom.values.has(date.getDate());
+    const dowOk = fDow.any || fDow.values.has(date.getDay());
+    if (fDom.any && fDow.any) return true;
+    if (!fDom.any && !fDow.any) return domOk || dowOk;
+    return fDom.any ? dowOk : domOk;
   } catch {
     return false;
   }
@@ -93,9 +93,7 @@ export class CronScheduler {
   private timer: NodeJS.Timeout | null = null;
   private durableFile: string;
 
-  constructor(
-    private opts: { workdir: string; onTrigger?: (job: CronJob) => void; checkIntervalMs?: number },
-  ) {
+  constructor(private opts: { workdir: string; onTrigger?: (job: CronJob) => void; checkIntervalMs?: number }) {
     this.durableFile = path.join(opts.workdir, '.cron', 'jobs.json');
     this.load();
   }

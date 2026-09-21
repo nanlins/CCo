@@ -7,7 +7,10 @@ test('sessionMemory 足够长时复用（0 API 调用）', async () => {
   const llm = new MockLlm({});
   const memory = '会话摘要: 目标-重构agent循环。已用工具: read_file, write_file。结论-完成重构。'.repeat(50);
   const r = await compactHistory(
-    [{ role: 'user', content: 'old message' }, { role: 'assistant', content: 'old reply' }],
+    [
+      { role: 'user', content: 'old message' },
+      { role: 'assistant', content: 'old reply' },
+    ],
     llm,
     { maxTokens: 1000, sessionMemory: memory },
   );
@@ -19,12 +22,13 @@ test('sessionMemory 足够长时复用（0 API 调用）', async () => {
 
 test('sessionMemory 太短时走 LLM 摘要', async () => {
   const llm = new MockLlm({
-    script: [
-      { blocks: [{ type: 'text', text: '<summary>short summary</summary>' }] },
-    ],
+    script: [{ blocks: [{ type: 'text', text: '<summary>short summary</summary>' }] }],
   });
   const r = await compactHistory(
-    [{ role: 'user', content: 'x' }, { role: 'assistant', content: 'y' }],
+    [
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: 'y' },
+    ],
     llm,
     { maxTokens: 1000, sessionMemory: '太短' },
   );

@@ -6,12 +6,13 @@ import type { LlmCallParams, LlmClient, LlmResult } from './client.js';
 import type { AssistantBlock } from '../types.js';
 
 export type ScriptedBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; name: string; input: Record<string, unknown> };
+  { type: 'text'; text: string } | { type: 'tool_use'; name: string; input: Record<string, unknown> };
 
 export interface ScriptedTurn {
   blocks: ScriptedBlock[];
   stopReason?: string | null;
+  /** 可选用量（测试 token 预算用）。 */
+  usage?: { inputTokens?: number; outputTokens?: number };
 }
 
 export interface MockOptions {
@@ -28,8 +29,10 @@ export class MockLlm implements LlmClient {
 
   async complete(params: LlmCallParams): Promise<LlmResult> {
     this.calls.push(params);
+    if (params.abortSignal?.aborted) throw new Error('aborted');
     if (this.opts.delayMs) {
       await new Promise((r) => setTimeout(r, this.opts.delayMs));
+      if (params.abortSignal?.aborted) throw new Error('aborted');
     }
     const scripted = this.opts.script?.[this.turn];
     this.turn += 1;
@@ -61,9 +64,7 @@ export class MockLlm implements LlmClient {
     /* 结构化输出模式：剧本里 tool_use 名与 structured.name 匹配时，直接提取为 structured。 */
     let structured: Record<string, unknown> | undefined;
     if (params.structured) {
-      const hit = content.find(
-        (b) => b.type === 'tool_use' && b.name === params.structured!.name,
-      );
+      const hit = content.find((b) => b.type === 'tool_use' && b.name === params.structured!.name);
       if (hit?.type === 'tool_use') {
         structured = hit.input as Record<string, unknown>;
       }
@@ -71,10 +72,10 @@ export class MockLlm implements LlmClient {
 
     return {
       content,
-      stopReason:
-        scripted?.stopReason !== undefined ? scripted.stopReason : hasToolUse ? 'tool_use' : 'end_turn',
+      stopReason: scripted?.stopReason !== undefined ? scripted.stopReason : hasToolUse ? 'tool_use' : 'end_turn',
       model: 'mock',
       structured,
+      usage: scripted?.usage,
     };
   }
 

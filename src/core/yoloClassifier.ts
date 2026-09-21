@@ -48,11 +48,7 @@ export class YoloClassifier {
   }
 
   /** 分类一个工具调用。 */
-  async classify(
-    toolName: string,
-    args: Record<string, unknown>,
-    workdir: string,
-  ): Promise<YoloVerdict> {
+  async classify(toolName: string, args: Record<string, unknown>, workdir: string): Promise<YoloVerdict> {
     /* 连续 unsafe 过多 → 回退人工 */
     if (this.consecutiveUnsafe >= this.maxUnsafe) return 'skip';
 

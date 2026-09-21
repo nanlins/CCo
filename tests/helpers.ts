@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, type AppConfig } from '../src/config.js';
 import { MockLlm, type ScriptedTurn } from '../src/llm/mock.js';
 import { Agent } from '../src/core/agent.js';
 import { HookRegistry } from '../src/core/hooks.js';
@@ -25,16 +25,21 @@ export interface TestHarness {
   cleanup: () => void;
 }
 
-export function makeHarness(opts: {
-  script?: ScriptedTurn[];
-  permissionMode?: 'ask' | 'auto' | 'deny';
-  ask?: (q: string) => Promise<boolean>;
-} = {}): TestHarness {
+export function makeHarness(
+  opts: {
+    script?: ScriptedTurn[];
+    permissionMode?: 'ask' | 'auto' | 'deny' | 'bypass';
+    ask?: (q: string) => Promise<boolean>;
+    /** 额外配置覆盖（预算/上限等测试用）。 */
+    configOverrides?: Partial<AppConfig>;
+  } = {},
+): TestHarness {
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-test-'));
   const config = loadConfig({
     workspaceDir: workdir,
     mock: true,
     permissionMode: opts.permissionMode ?? 'auto',
+    ...opts.configOverrides,
   });
   const llm = new MockLlm({ script: opts.script });
   const session: Session = {
@@ -76,4 +81,9 @@ export function makeHarness(opts: {
     workdir,
     cleanup: () => fs.rmSync(workdir, { recursive: true, force: true }),
   };
+}
+
+/** 给输出流补上终端尺寸（columns/rows），供 REPL 测试显式模拟终端大小。 */
+export function setTerminalSize(output: NodeJS.WritableStream, columns = 80, rows = 24): void {
+  Object.assign(output, { columns, rows });
 }

@@ -15,12 +15,19 @@
  *
  * 工具名统一 mcp__server__tool；连接后动态注册进 ToolRegistry。
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { ToolDef, ToolSchema } from '../types.js';
 import type { ToolRegistry } from '../core/registry.js';
 import { createTransport, type Transport, type TransportType } from '../mcp/transport.js';
 import { TokenStore, authorize, type OAuthConfig } from '../mcp/oauth.js';
+
+/** 用户级 MCP 信任存储目录（默认 ~/.anvil）。信任状态不得存放在 agent 可写的工作区内。 */
+export function defaultMcpTrustDir(): string {
+  return path.join(os.homedir(), '.anvil');
+}
 
 export interface McpServerConfig {
   /** stdio 模式：命令。 */
@@ -180,14 +187,26 @@ export class McpClient {
 export class McpPool {
   private clients = new Map<string, McpClient>();
   private channelMessages: Array<{ source: string; message: string }> = [];
+  /**
+   * 信任存储目录：默认用户级（~/.anvil），不在 agent 可写的 workspace 内。
+   * 这样 agent 即使能写 workspace 也无法给自己"预先授信"。
+   */
+  private trustDir: string;
 
   constructor(
     private workdir: string,
     private log: (level: 'info' | 'warn' | 'error', msg: string) => void = () => {},
-  ) {}
+    trustDir?: string,
+  ) {
+    this.trustDir = trustDir ?? defaultMcpTrustDir();
+  }
 
   private configPath(): string {
     return path.join(this.workdir, '.mcp', 'servers.json');
+  }
+
+  private trustPath(): string {
+    return path.join(this.trustDir, 'mcp-trusted.json');
   }
 
   private loadConfig(): Record<string, McpServerConfig> {
@@ -197,6 +216,61 @@ export class McpPool {
     } catch {
       return {};
     }
+  }
+
+  /* ---------- 信任门 ----------
+   * .mcp/servers.json 可以写任意 command，连接即启动子进程（= 任意代码执行）。
+   * 因此首次连接必须向用户展示命令并请求确认；确认结果按"完整配置指纹"持久化到
+   * 用户级目录（~/.anvil/mcp-trusted.json，agent 不可写）。配置任何字段变化
+   * （command/args/url/transport/headers/oauth）都会使信任失效，必须重新确认。
+   * 工作区内的 .mcp/trusted.json 一律被忽略（防 agent 自我授信）。 */
+
+  /** 服务器配置的人类可读描述（审批弹窗展示用）。 */
+  describeServer(cfg: McpServerConfig): string {
+    if (cfg.command) {
+      return `command: ${cfg.command}${cfg.args?.length ? ' ' + cfg.args.join(' ') : ''}`;
+    }
+    if (cfg.url) return `url: ${cfg.url} (transport: ${cfg.transport ?? 'http'})`;
+    return '(unknown server config)';
+  }
+
+  /** 完整配置指纹：command/args/url/transport/headers/oauth 任一变化都会使信任失效。 */
+  fingerprint(cfg: McpServerConfig): string {
+    const payload = JSON.stringify({
+      command: cfg.command ?? null,
+      args: cfg.args ?? [],
+      url: cfg.url ?? null,
+      transport: cfg.transport ?? (cfg.command ? 'stdio' : 'http'),
+      headers: cfg.headers ?? {},
+      oauth: cfg.oauth ?? null,
+    });
+    return crypto.createHash('sha256').update(payload).digest('hex');
+  }
+
+  private loadTrust(): Record<string, string> {
+    if (!fs.existsSync(this.trustPath())) return {};
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.trustPath(), 'utf8'));
+      return raw && typeof raw === 'object' ? (raw as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private saveTrust(trust: Record<string, string>): void {
+    try {
+      fs.mkdirSync(path.dirname(this.trustPath()), { recursive: true });
+      fs.writeFileSync(this.trustPath(), JSON.stringify(trust, null, 2), 'utf8');
+    } catch (err) {
+      this.log('warn', `[mcp] failed to persist trust store: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** 该 server 当前配置是否已被用户信任。 */
+  isTrusted(name: string): boolean {
+    const cfg = this.loadConfig()[name];
+    if (!cfg) return false;
+    return this.loadTrust()[name] === this.fingerprint(cfg);
   }
 
   available(): string[] {
@@ -214,12 +288,35 @@ export class McpPool {
     return msgs;
   }
 
-  async connect(name: string, registry: ToolRegistry): Promise<string> {
+  /**
+   * 连接 MCP server。信任门：未信任的配置必须先经 ask 确认（展示命令），
+   * 拒绝或未提供 ask（非交互）时绝不启动子进程。
+   */
+  async connect(name: string, registry: ToolRegistry, ask?: (question: string) => Promise<boolean>): Promise<string> {
     const cfg = this.loadConfig()[name];
     if (!cfg) {
       return `Error: unknown server '${name}'. Configure .mcp/servers.json. Available: ${this.available().join(', ') || '(none)'}`;
     }
     if (this.clients.has(name)) return `Already connected to '${name}'`;
+
+    /* 信任门：首次连接（或配置变更后）必须用户确认 */
+    if (!this.isTrusted(name)) {
+      if (!ask) {
+        return `Error: MCP server '${name}' is not trusted and no interactive approval channel is available; connection refused.`;
+      }
+      const desc = this.describeServer(cfg);
+      const ok = await ask(
+        `Connect MCP server '${name}'?\n  ${desc}\n  连接将启动上述子进程/远程连接（来自 .mcp/servers.json，属于可执行代码）。允许？ [y/N]`,
+      );
+      if (!ok) {
+        return `Error: MCP server '${name}' not trusted by user; connection refused (no process was started).`;
+      }
+      const trust = this.loadTrust();
+      trust[name] = this.fingerprint(cfg);
+      this.saveTrust(trust);
+      this.log('info', `[mcp] '${name}' trusted and recorded in ${this.trustPath()}`);
+    }
+
     const client = new McpClient(name, cfg, this.workdir, this.log);
     /* channel 通知 → 收集到 pool */
     client.onChannel((source, message) => {
@@ -270,9 +367,13 @@ export function mcpTools(pool: McpPool): ToolDef[] {
           required: ['name'],
         },
       },
-      executor: async (args: Record<string, unknown>, ctx: {
-        registry: ToolRegistry;
-      }): Promise<string> => pool.connect(String(args.name ?? ''), ctx.registry),
+      executor: async (
+        args: Record<string, unknown>,
+        ctx: {
+          registry: ToolRegistry;
+          ask: (question: string) => Promise<boolean>;
+        },
+      ): Promise<string> => pool.connect(String(args.name ?? ''), ctx.registry, ctx.ask),
     },
     {
       schema: {
@@ -284,9 +385,12 @@ export function mcpTools(pool: McpPool): ToolDef[] {
           required: ['name'],
         },
       },
-      executor: async (args: Record<string, unknown>, ctx: {
-        registry: ToolRegistry;
-      }): Promise<string> => pool.disconnect(String(args.name ?? ''), ctx.registry),
+      executor: async (
+        args: Record<string, unknown>,
+        ctx: {
+          registry: ToolRegistry;
+        },
+      ): Promise<string> => pool.disconnect(String(args.name ?? ''), ctx.registry),
     },
     {
       schema: {

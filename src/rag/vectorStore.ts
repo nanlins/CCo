@@ -189,7 +189,11 @@ export class PgVectorStore implements VectorStore {
 
 /* ---------- 工厂 ---------- */
 
-export function createVectorStore(opts: { kind: 'memory' | 'pg'; persistDir: string; pg?: PgVectorOptions }): VectorStore {
+export function createVectorStore(opts: {
+  kind: 'memory' | 'pg';
+  persistDir: string;
+  pg?: PgVectorOptions;
+}): VectorStore {
   if (opts.kind === 'pg' && opts.pg?.connectionString) {
     return new PgVectorStore(opts.pg);
   }

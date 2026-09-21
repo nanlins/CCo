@@ -70,6 +70,7 @@ test('index: 增量更新跳过未变更文件', async () => {
   const dir = makeDocDir();
   const rag = makeRag(dir);
   const r1 = await rag.index();
+  assert.ok(r1.indexed > 0, `首次索引应建立文档，实际 ${r1.indexed}`);
   const r2 = await rag.index();
   assert.equal(r2.indexed, 0, `第二次应全部跳过，实际 ${r2.indexed}`);
   // 修改一个文件后，只索引该文件

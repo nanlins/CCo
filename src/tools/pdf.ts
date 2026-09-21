@@ -36,9 +36,7 @@ export async function parsePdf(workdir: string, filePath: string, maxPages?: num
   for (let p = 1; p <= Math.min(limit, doc.numPages); p++) {
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
-    const pageText = content.items
-      .map((it) => ('str' in it ? (it as { str: string }).str : ''))
-      .join(' ');
+    const pageText = content.items.map((it) => ('str' in it ? (it as { str: string }).str : '')).join(' ');
     const block = `--- 第 ${p} 页 ---\n${pageText.trim()}`;
     parts.push(block);
     total += block.length;

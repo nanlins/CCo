@@ -45,3 +45,6 @@ test_terminal.js
 patch.mjs
 patch2.mjs
 .gitignore：Git 排除规则(保护密钥)
+
+# acceptance 受控审查输出（每次运行重新生成）
+tests/acceptance/openclaw-review-last-output.txt

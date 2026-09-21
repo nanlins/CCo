@@ -20,10 +20,7 @@ function makeGate(mode: 'ask' | 'auto' | 'deny', workdir: string, asks: string[]
 test('settings: 工具级 deny 直接拒绝（即使 auto 模式）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.claude', 'settings.json'),
-    JSON.stringify({ permissions: { Bash: 'deny' } }),
-  );
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { Bash: 'deny' } }));
   const gate = makeGate('auto', dir);
   const r = await gate.check('bash', { command: 'echo hi' }, { workdir: dir });
   assert.equal(r.allow, false);
@@ -34,10 +31,7 @@ test('settings: 工具级 deny 直接拒绝（即使 auto 模式）', async () =
 test('settings: 工具级 allow 直接放行（即使 ask 模式）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.claude', 'settings.json'),
-    JSON.stringify({ permissions: { Write: 'allow' } }),
-  );
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { Write: 'allow' } }));
   const gate = makeGate('ask', dir);
   const r = await gate.check('write_file', { path: 'a.txt', content: 'x' }, { workdir: dir });
   assert.equal(r.allow, true);
@@ -47,10 +41,7 @@ test('settings: 工具级 allow 直接放行（即使 ask 模式）', async () =
 test('settings: denyRules 按内容匹配', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.claude', 'settings.json'),
-    JSON.stringify({ denyRules: { Bash: 'rm -rf' } }),
-  );
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ denyRules: { Bash: 'rm -rf' } }));
   const gate = makeGate('auto', dir);
   const r = await gate.check('bash', { command: 'rm -rf foo' }, { workdir: dir });
   assert.equal(r.allow, false);
@@ -63,10 +54,7 @@ test('settings: denyRules 按内容匹配', async () => {
 test('settings: disabledTools 禁用整个工具', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.claude', 'settings.json'),
-    JSON.stringify({ disabledTools: ['Bash'] }),
-  );
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ disabledTools: ['Bash'] }));
   const gate = makeGate('auto', dir);
   const r = await gate.check('bash', { command: 'ls' }, { workdir: dir });
   assert.equal(r.allow, false);
@@ -76,10 +64,7 @@ test('settings: disabledTools 禁用整个工具', async () => {
 test('settings: 高优先级 local 覆盖 project', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.claude', 'settings.json'),
-    JSON.stringify({ permissions: { Bash: 'deny' } }),
-  );
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { Bash: 'deny' } }));
   fs.writeFileSync(
     path.join(dir, '.claude', 'settings.local.json'),
     JSON.stringify({ permissions: { Bash: 'allow' } }),

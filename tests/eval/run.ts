@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../../src/config.js';
 import { AnthropicLlm } from '../../src/llm/client.js';
-import { MockLlm, type ScriptedTurn } from '../../src/llm/mock.js';
+import { MockLlm } from '../../src/llm/mock.js';
 import { Agent } from '../../src/core/agent.js';
 import { HookRegistry } from '../../src/core/hooks.js';
 import { PermissionGate } from '../../src/core/permission.js';
@@ -55,7 +55,7 @@ async function runScenario(
     cwd: workdir,
     baseSystem:
       'You are a coding agent. Use tools to solve tasks efficiently. ' +
-      'Act, don\'t explain unless asked. Plan with TodoWrite for multi-step work. ' +
+      "Act, don't explain unless asked. Plan with TodoWrite for multi-step work. " +
       'Never claim a task completed until you verified it.',
     messages: [],
     todos: [],
@@ -95,6 +95,10 @@ async function runScenario(
       const last = logs[logs.length - 1];
       if (last && last.tool) last.output = e.output;
     }
+    /* 规划事件作为轨迹标记（__plan__），用于"先规划再执行"断言 */
+    if (e.type === 'plan') {
+      logs.push({ tool: '__plan__', args: { steps: e.steps.map((s) => s.content) }, output: e.reason });
+    }
   });
 
   scenario.setup?.(workdir);
@@ -111,7 +115,7 @@ async function runScenario(
   }
   const durationMs = Date.now() - start;
 
-  let reason: string | null = null;
+  let reason: string | null;
   try {
     reason = await scenario.check(workdir, makeCtx(workdir, logs, session, agent, durationMs));
   } catch (err) {

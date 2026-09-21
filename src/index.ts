@@ -34,7 +34,13 @@ export { SessionManager, type SessionInfo } from './core/sessionManager.js';
 export { ConfigWatcher } from './core/configWatcher.js';
 export { exportConversation, type ExportFormat } from './core/exportConversation.js';
 export { PluginMarket, type PluginInfo } from './core/pluginMarket.js';
-export { analyzeCommand, isCommandSafe, getRiskDescription, type CommandAnalysis, type RiskLevel } from './core/commandAnalyzer.js';
+export {
+  analyzeCommand,
+  isCommandSafe,
+  getRiskDescription,
+  type CommandAnalysis,
+  type RiskLevel,
+} from './core/commandAnalyzer.js';
 export { setLocale, getLocale, t, type Locale } from './core/i18n.js';
 export { ShortcutManager, createDefaultShortcuts } from './core/shortcuts.js';
 export { configGuide, saveUserConfig, setEnvValue, readEnvValue, hasApiKey, hasEnvFile } from './core/configManager.js';

@@ -57,19 +57,7 @@ export class DockerSandbox {
 
   /** 在容器中执行命令。 */
   async run(command: string, workdir?: string): Promise<{ output: string; exitCode: number }> {
-    const args: string[] = [
-      'run', '--rm',
-      `--memory=${this.opts.memory}`,
-      `--network=${this.opts.network}`,
-      '--cpus=1',
-    ];
-
-    /* 挂载工作区 */
-    if (this.opts.mountWorkdir && workdir) {
-      args.push('-v', `${workdir}:/workspace`, '-w', '/workspace');
-    }
-
-    args.push(this.opts.image, 'sh', '-c', command);
+    const args = buildDockerRunArgs(this.opts, command, workdir);
 
     const child = spawn('docker', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -105,4 +93,17 @@ export class DockerSandbox {
   async runNode(code: string): Promise<{ output: string; exitCode: number }> {
     return this.run(`node -e ${JSON.stringify(code)}`, undefined);
   }
+}
+
+/**
+ * 纯函数：构造 `docker run` 参数（供单测，无需真实 docker）。
+ * 与 DockerSandbox.run 共用，保证测试覆盖的就是线上逻辑。
+ */
+export function buildDockerRunArgs(opts: Required<DockerSandboxOptions>, command: string, workdir?: string): string[] {
+  const args: string[] = ['run', '--rm', `--memory=${opts.memory}`, `--network=${opts.network}`, '--cpus=1'];
+  if (opts.mountWorkdir && workdir) {
+    args.push('-v', `${workdir}:/workspace`, '-w', '/workspace');
+  }
+  args.push(opts.image, 'sh', '-c', command);
+  return args;
 }

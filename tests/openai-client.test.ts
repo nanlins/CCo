@@ -66,7 +66,11 @@ test('toOpenAiMessages: 无文本的 tool_use → content=null；并行多 tool_
 
 test('toOpenAiTools: 包装为 function 类型', () => {
   const out = toOpenAiTools([
-    { name: 'read_file', description: '读文件', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+    {
+      name: 'read_file',
+      description: '读文件',
+      input_schema: { type: 'object', properties: { path: { type: 'string' } } },
+    },
   ]);
   assert.equal(out.length, 1);
   assert.equal(out[0].type, 'function');
@@ -80,20 +84,25 @@ test('mapFinishReason: OpenAI → Anthropic 语义', () => {
   assert.equal(mapFinishReason(null), 'end_turn');
 });
 
-test('StreamAccumulator: 文本增量 + 跨 chunk 拼接 tool_calls + usage', () => {
+test('StreamAccumulator: 文本增量 + tool_calls 名称单次下发 + 跨 chunk 拼接 arguments + usage', () => {
   const acc = new StreamAccumulator();
   assert.equal(acc.feed({ choices: [{ delta: { content: '你好' } }] }), '你好');
   acc.feed({ choices: [{ delta: { content: '，世界' } }] });
   acc.feed({
-    choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_9', function: { name: 'read_' } }] } }],
+    choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_9', function: { name: 'read_file', arguments: '' } }] } }],
   });
   acc.feed({
-    choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'file', arguments: '{"path":' } }] }, finish_reason: null }],
+    choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] }, finish_reason: null }],
   });
   acc.feed({
-    choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a.md"}' } }] }, finish_reason: 'tool_calls' }],
+    choices: [
+      { delta: { tool_calls: [{ index: 0, function: { arguments: '"a.md"}' } }] }, finish_reason: 'tool_calls' },
+    ],
   });
-  acc.feed({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 60 } } });
+  acc.feed({
+    choices: [],
+    usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 60 } },
+  });
 
   assert.equal(acc.text, '你好，世界');
   assert.equal(acc.finishReason, 'tool_calls');
@@ -110,12 +119,34 @@ test('StreamAccumulator: 文本增量 + 跨 chunk 拼接 tool_calls + usage', ()
   assert.equal(acc.usage?.prompt_tokens_details?.cached_tokens, 60);
 });
 
+test('StreamAccumulator: provider 重复下发 name 不导致名称重复（首次赋值语义）', () => {
+  const acc = new StreamAccumulator();
+  acc.feed({
+    choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read_file', arguments: '' } }] } }],
+  });
+  /* provider 在后续 chunk 重复下发完整 name → 不应拼接为 read_fileread_file */
+  acc.feed({
+    choices: [
+      {
+        delta: { tool_calls: [{ index: 0, function: { name: 'read_file', arguments: '{"path":' } }] },
+      },
+    ],
+  });
+  acc.feed({
+    choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a.md"}' } }] } }],
+  });
+  const blocks = acc.blocks();
+  const use = blocks[0];
+  assert.ok(use.type === 'tool_use');
+  if (use.type === 'tool_use') {
+    assert.equal(use.name, 'read_file', '重复 name chunk 不得导致名称重复');
+    assert.deepEqual(use.input, { path: 'a.md' });
+  }
+});
+
 test('sseLines: 跨 chunk 半行切分 + [DONE]', async () => {
   const enc = new TextEncoder();
-  const parts = [
-    enc.encode('data: {"a":1}\nda'),
-    enc.encode('ta: {"b":2}\n\ndata: [DONE]\n'),
-  ];
+  const parts = [enc.encode('data: {"a":1}\nda'), enc.encode('ta: {"b":2}\n\ndata: [DONE]\n')];
   async function* gen(): AsyncGenerator<Uint8Array> {
     for (const p of parts) yield p;
   }
@@ -126,7 +157,10 @@ test('sseLines: 跨 chunk 半行切分 + [DONE]', async () => {
 
 test('classifyHttpError: 上下文超限 → prompt_too_long（对齐 recovery.isPromptTooLong）', () => {
   const body = JSON.stringify({
-    error: { message: "This model's maximum context length is 131072 tokens. However, you requested 200000 tokens", type: 'invalid_request_error' },
+    error: {
+      message: "This model's maximum context length is 131072 tokens. However, you requested 200000 tokens",
+      type: 'invalid_request_error',
+    },
   });
   const err = classifyHttpError(400, body);
   assert.equal(err.status, 400);

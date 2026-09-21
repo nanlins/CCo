@@ -12,7 +12,21 @@ export interface DocChunk {
   text: string;
 }
 
-export const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.tasks', '.team', '.transcripts', '.task_outputs', '.worktrees', '.cron', '.memory', '.audit', '.mcp', '.vector_index']);
+export const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '.tasks',
+  '.team',
+  '.transcripts',
+  '.task_outputs',
+  '.worktrees',
+  '.cron',
+  '.memory',
+  '.audit',
+  '.mcp',
+  '.vector_index',
+]);
 
 /** 收集目录下所有 .md / .txt 文件。 */
 export function collectDocs(root: string, limit = 200): string[] {

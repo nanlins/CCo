@@ -17,7 +17,14 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "eval": "node --import tsx tests/eval/run.ts",
-    "bench": "node --import tsx tests/perf/bench.ts"
+    "bench": "node --import tsx tests/perf/bench.ts",
+    "acceptance:openclaw": "node --import tsx tests/acceptance/openclaw-review.ts",
+    "acceptance:nanoclaw": "node --import tsx tests/acceptance/nanoclaw-review.ts",
+    "acceptance:plan": "node --import tsx tests/acceptance/plan-execute.ts",
+    "lint": "eslint src tests bin eslint.config.js",
+    "lint:fix": "eslint src tests bin eslint.config.js --fix",
+    "format": "prettier --write src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml",
+    "format:check": "prettier --check src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -26,14 +33,19 @@
     "pdfjs-dist": "^6.2.108",
     "pg": "^8.22.0",
     "proper-lockfile": "^4.1.2",
+    "string-width": "^8.2.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.20.3",
     "@types/proper-lockfile": "^4.1.4",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.67.0"
   }
 }
-

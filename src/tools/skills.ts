@@ -77,17 +77,26 @@ export function loadSkillTool(loader: SkillLoader): ToolDef {
 
 function parseSkillFile(file: string): Skill | null {
   const raw = fs.readFileSync(file, 'utf8');
-  const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  /* 先去除 BOM，再把 \r\n 与 \r 归一化为 \n，保证 frontmatter 解析跨平台/跨编辑器稳定 */
+  const normalized = raw
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  const m = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   const meta: Record<string, string> = {};
   if (m) {
     for (const line of m[1].split('\n')) {
       const idx = line.indexOf(':');
-      if (idx > 0) meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+      if (idx > 0) {
+        /* 元数据键允许前导空白：键值都 trim 后再记录 */
+        const key = line.slice(0, idx).trim();
+        if (key) meta[key] = line.slice(idx + 1).trim();
+      }
     }
   }
   const name = meta.name ?? '';
   const description = meta.description ?? '';
-  const body = m ? m[2].trim() : raw;
+  const body = m ? m[2].trim() : normalized;
   if (!name || !description) return null;
   return { name, description, body };
 }

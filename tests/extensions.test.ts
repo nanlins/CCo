@@ -22,7 +22,14 @@ test('权限冒泡: 队友发 permission_request 给 Lead，收到 allow 后返�
   bus.ensureAgent('lead');
   const config = loadConfig({ workspaceDir: dir, mock: true, permissionMode: 'auto' });
   const llm = new MockLlm({});
-  const session: Session = { id: 'mate-bob', cwd: dir, baseSystem: 'x', messages: [], todos: [], startTime: Date.now() };
+  const session: Session = {
+    id: 'mate-bob',
+    cwd: dir,
+    baseSystem: 'x',
+    messages: [],
+    todos: [],
+    startTime: Date.now(),
+  };
   const tasks = new TaskSystem(path.join(dir, '.tasks'));
   const agent = new Agent({
     config,

@@ -1,5 +1,6 @@
 /**
  * i18n 多语言支持 —— 中英文切换。
+ * 启动时读取 ANVIL_LANG（zh|en），运行时用 /lang 命令切换（见 main.ts）。
  */
 
 export type Locale = 'zh' | 'en';
@@ -28,6 +29,11 @@ const messages: Record<Locale, Record<string, string>> = {
     'router.pro': 'pro 模型',
     'router.default': '默认路由',
     'redis.cache_hit': '工具缓存命中',
+    'repl.badge.you': '你',
+    'repl.badge.permission': '权限请求',
+    'repl.cancel_requested': '[取消请求] 正在等待当前步骤结束后退出…',
+    'repl.exit_hint': '(再按一次 Ctrl+C 退出；输入 /exit 也可以)',
+    'repl.error': '[错误]',
   },
   en: {
     'app.name': 'Anvil',
@@ -52,10 +58,16 @@ const messages: Record<Locale, Record<string, string>> = {
     'router.pro': 'pro model',
     'router.default': 'default routing',
     'redis.cache_hit': 'tool cache hit',
+    'repl.badge.you': 'You',
+    'repl.badge.permission': 'Permission',
+    'repl.cancel_requested': '[cancel requested] waiting for the current step to finish…',
+    'repl.exit_hint': '(press Ctrl+C again to exit, or type /exit)',
+    'repl.error': '[Error]',
   },
 };
 
-let currentLocale: Locale = 'zh';
+const envLocale = (process.env.ANVIL_LANG ?? '').toLowerCase();
+let currentLocale: Locale = envLocale === 'en' ? 'en' : 'zh';
 
 export function setLocale(locale: Locale): void {
   currentLocale = locale;

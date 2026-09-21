@@ -103,7 +103,11 @@ function evictKnowledgeInRegion(
 
 /* ---------- L3: budget（大结果落盘） ---------- */
 
-function toolResultBudget(messages: Message[], o: CompactOptions, toolMap: Map<string, { name: string; path?: string }>): Message[] {
+function toolResultBudget(
+  messages: Message[],
+  o: CompactOptions,
+  toolMap: Map<string, { name: string; path?: string }>,
+): Message[] {
   /* 通道 1：最新一批 tool_result 超过单批预算 → 落盘最大的若干条 */
   const last = messages[messages.length - 1];
   if (last && last.role === 'user') {
@@ -190,12 +194,22 @@ export function snipCompact(messages: Message[], o: CompactOptions): Message[] {
 
   /* 退路：教学版保护逻辑（限步，防止纯工具对序列级联吞掉整个对话） */
   let guard = 0;
-  while (headEnd < tailStart && guard < 8 && hasToolUse(messages[headEnd - 1]) && isToolResultMessage(messages[headEnd])) {
+  while (
+    headEnd < tailStart &&
+    guard < 8 &&
+    hasToolUse(messages[headEnd - 1]) &&
+    isToolResultMessage(messages[headEnd])
+  ) {
     headEnd += 1;
     guard += 1;
   }
   guard = 0;
-  while (tailStart > headEnd && guard < 8 && isToolResultMessage(messages[tailStart]) && hasToolUse(messages[tailStart - 1])) {
+  while (
+    tailStart > headEnd &&
+    guard < 8 &&
+    isToolResultMessage(messages[tailStart]) &&
+    hasToolUse(messages[tailStart - 1])
+  ) {
     tailStart -= 1;
     guard += 1;
   }
@@ -310,7 +324,11 @@ export async function compactHistory(
         })
       : [];
     return {
-      messages: [{ role: 'user', content: `[Conversation compacted. Summary:\n${opts.sessionMemory}]` }, ...tail, ...restored],
+      messages: [
+        { role: 'user', content: `[Conversation compacted. Summary:\n${opts.sessionMemory}]` },
+        ...tail,
+        ...restored,
+      ],
       summary: opts.sessionMemory,
       source: 'session-memory',
     };

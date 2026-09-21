@@ -72,15 +72,37 @@ const MEDIUM_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 
 /* 只读命令 */
 const READ_COMMANDS = new Set([
-  'ls', 'dir', 'cat', 'type', 'more', 'less', 'head', 'tail', 'grep', 'findstr',
-  'find', 'pwd', 'echo', 'whoami', 'date', 'uname', 'hostname', 'env', 'set',
-  'git', 'node', 'python', 'pip', 'npm', 'rg', 'ag', 'fd',
+  'ls',
+  'dir',
+  'cat',
+  'type',
+  'more',
+  'less',
+  'head',
+  'tail',
+  'grep',
+  'findstr',
+  'find',
+  'pwd',
+  'echo',
+  'whoami',
+  'date',
+  'uname',
+  'hostname',
+  'env',
+  'set',
+  'git',
+  'node',
+  'python',
+  'pip',
+  'npm',
+  'rg',
+  'ag',
+  'fd',
 ]);
 
 /* 网络命令 */
-const NETWORK_COMMANDS = new Set([
-  'curl', 'wget', 'ping', 'nc', 'netcat', 'ssh', 'scp', 'rsync', 'ftp', 'telnet',
-]);
+const NETWORK_COMMANDS = new Set(['curl', 'wget', 'ping', 'nc', 'netcat', 'ssh', 'scp', 'rsync', 'ftp', 'telnet']);
 
 export function analyzeCommand(command: string): CommandAnalysis {
   const reasons: string[] = [];

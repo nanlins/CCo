@@ -256,8 +256,7 @@ export function taskTools(system: TaskSystem, defaultOwner: string): ToolDef[] {
           required: ['id'],
         },
       },
-      executor: async (args: Record<string, unknown>): Promise<string> =>
-        system.complete(String(args.id ?? '')),
+      executor: async (args: Record<string, unknown>): Promise<string> => system.complete(String(args.id ?? '')),
     },
   ];
 }

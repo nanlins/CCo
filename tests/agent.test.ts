@@ -64,10 +64,7 @@ test('deny mode blocks write tools with permission error result', async () => {
 
 test('Stop hook forceContinue keeps the loop running', async () => {
   const h = makeHarness({
-    script: [
-      { blocks: [{ type: 'text', text: 'first' }] },
-      { blocks: [{ type: 'text', text: 'second' }] },
-    ],
+    script: [{ blocks: [{ type: 'text', text: 'first' }] }, { blocks: [{ type: 'text', text: 'second' }] }],
   });
   let continueOnce = true;
   h.hooks.register('Stop', () => {

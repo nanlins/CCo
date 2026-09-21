@@ -39,7 +39,10 @@ export interface Transport {
 export class StdioTransport implements Transport {
   private child: ChildProcess | null = null;
   private rl: readline.Interface | null = null;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+  >();
   private nextId = 1;
   private notificationHandlers: Array<(method: string, params: unknown) => void> = [];
   private connected = false;
@@ -226,7 +229,10 @@ export class SseTransport implements Transport {
   private connected = false;
   private notificationHandlers: Array<(method: string, params: unknown) => void> = [];
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+  >();
   private abortController: AbortController | null = null;
   private messageEndpoint: string | null = null;
 
@@ -360,15 +366,23 @@ export function createTransport(
   }
 }
 
-/* ---------- WebSocket transport ---------- */
+/* ---------- WebSocket transport ----------
+ * 使用 Node.js 内置全局 WebSocket 客户端（Node ≥ 20.10 实验性 / ≥ 22 稳定）。
+ * 注意：浏览器规范的全局 WebSocket 不支持自定义请求头；若 server 需要
+ * Authorization，请改用 http transport 或把令牌放进 URL 查询参数。
+ */
 
 export class WebSocketTransport implements Transport {
+  private ws: import('undici-types').WebSocket | null = null;
   private connected = false;
   private notificationHandlers: Array<(method: string, params: unknown) => void> = [];
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  private ws: import('node:http').ClientRequest | null = null;
-  private socket: import('node:net').Socket | null = null;
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+  >();
+  private connectTimeoutMs = 10_000;
+  private requestTimeoutMs = 30_000;
 
   constructor(
     private url: string,
@@ -376,42 +390,109 @@ export class WebSocketTransport implements Transport {
   ) {}
 
   async connect(): Promise<void> {
-    /* WebSocket 连接：使用 Node.js 内置 http 升级 */
-    const { WebSocket } = await import('node:stream/web' as never).catch(() => ({ WebSocket: null }));
-    if (!WebSocket) {
-      /* Node.js 20 没有内置 WebSocket，使用 http 升级模拟 */
-      throw new Error('WebSocket transport requires Node.js 21+ or ws package');
+    const WS = (globalThis as { WebSocket?: new (url: string) => import('undici-types').WebSocket }).WebSocket;
+    if (typeof WS !== 'function') {
+      throw new Error('WebSocket transport requires Node.js >= 20.10 (built-in global WebSocket)');
     }
+    if (!/^wss?:\/\//i.test(this.url)) {
+      throw new Error(`WebSocket transport requires ws:// or wss:// url, got: ${this.url}`);
+    }
+    const ws = new WS(this.url);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(`WebSocket connect timeout (${this.connectTimeoutMs}ms): ${this.url}`));
+      }, this.connectTimeoutMs);
+      ws.addEventListener('open', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.addEventListener('error', (ev) => {
+        clearTimeout(timer);
+        const msg = (ev as { message?: string }).message;
+        reject(new Error(`WebSocket connection failed: ${this.url}${msg ? ` (${msg})` : ''}`));
+      });
+    });
+    this.ws = ws;
     this.connected = true;
+    ws.addEventListener('message', (ev) => {
+      const data = (ev as { data?: unknown }).data;
+      this.handleData(typeof data === 'string' ? data : String(data));
+    });
+    ws.addEventListener('close', () => {
+      this.connected = false;
+      this.failPending(new Error('WebSocket closed'));
+    });
   }
 
-  async request(method: string, params: unknown): Promise<unknown> {
-    if (!this.connected) throw new Error('WebSocket not connected');
+  private handleData(text: string): void {
+    let msg: McpMessage;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (msg.id !== undefined) {
+      const pending = this.pending.get(msg.id);
+      if (!pending) return;
+      this.pending.delete(msg.id);
+      clearTimeout(pending.timer);
+      if (msg.error) pending.reject(new Error(msg.error.message ?? 'MCP error'));
+      else pending.resolve(msg.result);
+    } else if (msg.method) {
+      for (const h of this.notificationHandlers) h(msg.method, msg.params);
+    }
+  }
+
+  private failPending(err: Error): void {
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    this.pending.clear();
+  }
+
+  request(method: string, params: unknown): Promise<unknown> {
+    if (!this.connected || !this.ws) return Promise.reject(new Error('WebSocket not connected'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`MCP WS request timed out: ${method}`));
-      }, 30_000);
+      }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.send({ jsonrpc: '2.0', id, method, params });
+      try {
+        this.ws!.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      } catch (err) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
-  private send(msg: McpMessage): void {
-    /* WebSocket 发送（简化实现） */
-    if (this.socket?.writable) {
-      this.socket.write(JSON.stringify(msg) + '\n');
-    }
-  }
-
   notify(method: string, params: unknown): void {
-    this.send({ jsonrpc: '2.0', method, params });
+    if (!this.connected || !this.ws) return;
+    try {
+      this.ws.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
+    } catch {
+      /* 静默失败，对齐其它 transport */
+    }
   }
 
   close(): void {
     this.connected = false;
-    this.socket?.destroy();
+    this.failPending(new Error('WebSocket transport closed'));
+    try {
+      this.ws?.close();
+    } catch {
+      /* ignore */
+    }
+    this.ws = null;
   }
 
   onNotification(handler: (method: string, params: unknown) => void): void {

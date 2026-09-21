@@ -15,10 +15,7 @@ export interface UsageRecord {
 export class UsageTracker {
   private records: UsageRecord[] = [];
 
-  record(
-    model: string,
-    usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number },
-  ): void {
+  record(model: string, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number }): void {
     this.records.push({
       model,
       inputTokens: usage.inputTokens ?? 0,

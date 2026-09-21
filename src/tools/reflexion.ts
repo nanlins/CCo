@@ -14,15 +14,11 @@ export interface ReviewTarget {
 }
 
 /** 对目标做自评（LLM Reflexion）：返回结构化评审结果。 */
-export async function selfReview(
-  target: ReviewTarget,
-  llm: LlmClient,
-  maxTokens = 1500,
-): Promise<string> {
+export async function selfReview(target: ReviewTarget, llm: LlmClient, maxTokens = 1500): Promise<string> {
   const content =
     target.kind === 'file'
       ? `[文件: ${target.path}]\n${target.text?.slice(0, 4000) ?? '(内容见文件)'}`
-      : target.text?.slice(0, 4000) ?? '(空)';
+      : (target.text?.slice(0, 4000) ?? '(空)');
 
   const result = await llm.complete({
     system:
