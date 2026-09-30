@@ -43,10 +43,12 @@ export function pathFingerprint(name: string, args: unknown): string | null {
 }
 
 /** 研究关键词（识别"只读研究"意图）。 */
-const RESEARCH_RX = /阅读|分析|回答|说明|介绍|阐述|讲解|原理|架构|运行逻辑|底层|知识|技能|梳理|解读|总结|理解|survey|research|analy|read\s/i;
+const RESEARCH_RX =
+  /阅读|分析|回答|说明|介绍|阐述|讲解|原理|架构|运行逻辑|底层|知识|技能|梳理|解读|总结|理解|survey|research|analy|read\s/i;
 
 /** 写代码/文件意图（识别"要动手改/写"的任务，这类不是研究）。 */
-const WRITE_INTENT_RX = /(创建|新建|生成|写一个|实现一个|修改|编辑|修复|重构|添加一个|搭建一个|build|create|implement|fix|write\s+me)/i;
+const WRITE_INTENT_RX =
+  /(创建|新建|生成|写一个|实现一个|修改|编辑|修复|重构|添加一个|搭建一个|build|create|implement|fix|write\s+me)/i;
 
 /** 判定输入是否为只读研究任务（含研究意图且无写代码意图）。 */
 export function isResearchTask(input: string): boolean {

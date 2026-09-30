@@ -261,10 +261,7 @@ export const DEFAULT_SCENARIOS: EvalScenario[] = [
     requiresTool: ['bash'],
     setup: (workdir) => {
       // 缺右括号 → 语法错误；修复后应输出 RESULT_OK
-      fs.writeFileSync(
-        path.join(workdir, 'broken.js'),
-        "console.log('RESULT_OK'  // missing closing paren\n",
-      );
+      fs.writeFileSync(path.join(workdir, 'broken.js'), "console.log('RESULT_OK'  // missing closing paren\n");
     },
     check: async (workdir, ctx) => {
       const bashCalls = ctx.logs.filter((l) => l.tool === 'bash');

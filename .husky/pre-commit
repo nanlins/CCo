@@ -1,0 +1,4 @@
+# 本地 pre-commit 门禁：与 CI 的 format:check 作业同标准，阻止未格式化代码入库
+# 修改记录：
+#   2026-09-29 新增：husky pre-commit 钩子，提交前执行 Prettier 格式检查
+npm run format:check

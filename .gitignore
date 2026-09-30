@@ -48,3 +48,10 @@ patch2.mjs
 
 # acceptance 受控审查输出（每次运行重新生成）
 tests/acceptance/openclaw-review-last-output.txt
+
+# IDE 与 husky 运行期目录（pre-commit 钩子本体 .husky/pre-commit 仍入库）
+.idea/
+.husky/_
+
+# 修改记录：
+#   2026-09-29 新增 .idea/ 与 .husky/_ 排除，防止 IDE 配置与 husky 运行期文件入库

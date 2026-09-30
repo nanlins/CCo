@@ -16,7 +16,10 @@ test('研究任务：run 开始时提取必答问题清单并写入 session.chec
     await h.agent.run('阅读该项目，回答：它的沙箱隔离如何实现？底层进程通信的原理是什么？');
     assert.ok(h.session.checklist, '应提取 checklist');
     assert.ok(h.session.checklist.length >= 2, `应至少 2 个问题，实际 ${h.session.checklist?.length}`);
-    assert.ok(h.session.checklist.some((q) => q.includes('沙箱')), '应含沙箱问题');
+    assert.ok(
+      h.session.checklist.some((q) => q.includes('沙箱')),
+      '应含沙箱问题',
+    );
   } finally {
     h.cleanup();
   }
@@ -73,7 +76,10 @@ test('研究任务：同一路径反复诊断 → 低价值循环拦截（重定
     const blocked = results.filter((b) => b.content.includes('same path/object diagnosed'));
     assert.equal(results.length, 4, `应返回 4 个 read_file 结果，实际 ${results.length}`);
     assert.equal(blocked.length, 1, `第 4 次应被路径循环拦截，实际 ${blocked.length}`);
-    assert.ok(events.some((m) => m.includes('low-value-loop')), `应有 low-value-loop 事件: ${events.join('|')}`);
+    assert.ok(
+      events.some((m) => m.includes('low-value-loop')),
+      `应有 low-value-loop 事件: ${events.join('|')}`,
+    );
   } finally {
     h.cleanup();
   }

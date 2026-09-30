@@ -18,9 +18,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const NANOCLAW =
-  process.env.NANOCLAW_PATH ??
-  'D:/gitcode/识++练/比特-项目/综合实战 手搓 OpenClaw/nanoclaw';
+const NANOCLAW = process.env.NANOCLAW_PATH ?? 'D:/gitcode/识++练/比特-项目/综合实战 手搓 OpenClaw/nanoclaw';
 
 if (!process.env.OPENAI_API_KEY) {
   console.error('SKIP: 需要环境变量 OPENAI_API_KEY（DeepSeek v4 flash 端点密钥，只通过环境变量传入）');
@@ -165,7 +163,16 @@ const DIRECTIONS: [string, RegExp][] = [
 const q4Idx = finalText.lastIndexOf('## Q4');
 const q4Text = q4Idx >= 0 ? finalText.slice(q4Idx) : '';
 const covered = DIRECTIONS.filter(([, rx]) => rx.test(q4Text)).map(([n]) => n);
-report(covered.length >= 7, `Q4 覆盖 ${covered.length}/9 能力方向${covered.length < 9 ? `（缺：${DIRECTIONS.filter(([, r]) => !r.test(q4Text)).map(([n]) => n).join('、')}）` : ''}`);
+report(
+  covered.length >= 7,
+  `Q4 覆盖 ${covered.length}/9 能力方向${
+    covered.length < 9
+      ? `（缺：${DIRECTIONS.filter(([, r]) => !r.test(q4Text))
+          .map(([n]) => n)
+          .join('、')}）`
+      : ''
+  }`,
+);
 
 console.error('\n===== 验收结果 =====');
 console.error(

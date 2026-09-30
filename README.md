@@ -1,5 +1,7 @@
 # 手搓 Claude Code（Hand-rolled Claude Code）
 
+[![CI/CD](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml)
+
 > 从零构建的 Agent Harness —— 用 4 个里程碑复刻 Claude Code 的架构骨架。
 > 智能来自模型，Agent 产品 = 模型 + Harness。这个仓库是"造载具"的练习。
 
@@ -227,8 +229,8 @@ docker-compose down -v         # 停止 + 删除数据卷
 | `MAX_TOOL_CALLS_PER_RUN`                                           | 单次 run 工具调用上限（80% 预警，耗尽进入最终报告模式）                          | `80`                        |
 | `MAX_RUN_OUTPUT_TOKENS`                                            | 单次 run 输出 token 预算（80% 预警，耗尽进入最终报告模式）                       | `200000`                    |
 | `MAX_LLM_CALLS_PER_RUN`                                            | 单次 run LLM 调用次数上限（耗尽进入最终报告模式）                                | `40`                        |
-| `AUTO_PLAN`                                                        | 大任务先规划再执行：`1` 强制 / `0` 关闭 / 缺省启发式（长输入+多步骤标记）         | 启发式                      |
-| `PLAN_THRESHOLD_CHARS` / `PLAN_MAX_STEPS`                          | 触发规划的输入长度阈值 / 规划步骤数上限                                         | `160` / `8`                 |
+| `AUTO_PLAN`                                                        | 大任务先规划再执行：`1` 强制 / `0` 关闭 / 缺省启发式（长输入+多步骤标记）        | 启发式                      |
+| `PLAN_THRESHOLD_CHARS` / `PLAN_MAX_STEPS`                          | 触发规划的输入长度阈值 / 规划步骤数上限                                          | `160` / `8`                 |
 | `MAX_SUBAGENTS_PER_TASK`                                           | 单任务 subagent 数量上限                                                         | `3`                         |
 | `SUBAGENT_MAX_TURNS/TOOL_CALLS/LLM_CALLS/OUTPUT_TOKENS`            | 每个 subagent 独立预算                                                           | 12 / 15 / 12 / 100000       |
 | `SUBAGENT_TOTAL_TOOL_CALLS` / `SUBAGENT_TOTAL_OUTPUT_TOKENS`       | 父任务全部 subagent 的聚合成本预算                                               | 40 / 400000                 |
@@ -359,3 +361,17 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
 - 教学版 mock MCP；本仓库真实 stdio/http/sse/ws JSON-RPC 客户端 + 示例服务器 + 信任门。
 - 已知取舍（文档化）：SSRF 防护的 DNS 预检与 fetch 再解析之间存在理论 DNS-rebinding 窗口（生产应叠加出口代理）；
   内置 WebSocket 客户端（浏览器规范）不支持自定义请求头；`bypass` 模式为显式全放行，风险由使用者承担。
+
+## 历史说明
+
+本仓库早期历史中存在机器化提交形态：2026-08-07 00:56/00:57 连续两分钟 9+8 个 commit（逐文件提交规程产物）。
+该形态源于当时执行的"逐文件提交"自动化规程，不代表真实开发节奏，也不反映代码来源的全部事实；
+自 2026-09-29 起已改为功能分支 + 逻辑分组提交 + squash 合并，并以 CI 门禁（测试/lint/格式/构建）作为合并前提。
+
+## 修改记录
+
+- 2026-09-29：
+  - 全仓 prettier --write 统一格式（11 个文件），恢复 CI format:check 门禁绿色
+  - package.json：新增 prepare 脚本与 husky devDependency；.husky/pre-commit：提交前执行 format:check（纯 JSON 不便注释，用途在此说明）
+  - .github/workflows/ci-cd.yml：docker job 增加 hashFiles('Dockerfile') 守卫
+  - README.md：新增 CI badge、历史说明与修改记录小节

@@ -14,14 +14,26 @@ import {
 test('extractQuestions：问号切分', () => {
   const q = extractQuestions('阅读该项目，回答：它是如何做沙箱隔离的？底层是如何实现进程通信的？');
   assert.ok(q.length >= 2, `应提取至少 2 个问题，实际 ${q.length}: ${q.join(' | ')}`);
-  assert.ok(q.some((x) => x.includes('沙箱')), `应含沙箱问题: ${q.join(' | ')}`);
+  assert.ok(
+    q.some((x) => x.includes('沙箱')),
+    `应含沙箱问题: ${q.join(' | ')}`,
+  );
 });
 
 test('extractQuestions：编号列表', () => {
   const q = extractQuestions('请回答以下问题：1. 它的路由机制是什么 2. 会话如何持久化 3. 工具权限如何校验');
-  assert.ok(q.some((x) => x.includes('路由')), `应含编号1问题: ${q.join(' | ')}`);
-  assert.ok(q.some((x) => x.includes('持久化')), `应含编号2问题: ${q.join(' | ')}`);
-  assert.ok(q.some((x) => x.includes('权限')), `应含编号3问题: ${q.join(' | ')}`);
+  assert.ok(
+    q.some((x) => x.includes('路由')),
+    `应含编号1问题: ${q.join(' | ')}`,
+  );
+  assert.ok(
+    q.some((x) => x.includes('持久化')),
+    `应含编号2问题: ${q.join(' | ')}`,
+  );
+  assert.ok(
+    q.some((x) => x.includes('权限')),
+    `应含编号3问题: ${q.join(' | ')}`,
+  );
 });
 
 test('extractQuestions：去重', () => {

@@ -51,7 +51,8 @@ export function shouldPlan(
     return { plan: true, reason: 'autoPlan=on（强制规划）' };
   }
   /* 启发式：未显式配置时，长输入 + 多步骤标记 → 规划 */
-  if (text.length < thresholdChars) return { plan: false, reason: `输入 ${text.length} 字符，低于阈值 ${thresholdChars}` };
+  if (text.length < thresholdChars)
+    return { plan: false, reason: `输入 ${text.length} 字符，低于阈值 ${thresholdChars}` };
   const multiStep = /(然后|接着|再|并且|并|同时|首先|其次|最后|依次|分别|以及|步骤|第一步|第二步|\d+[.、)])/.test(text);
   if (multiStep) return { plan: true, reason: '检测到多步骤标记' };
   const clauses = text.split(/[。；;\n]/).filter((s) => s.trim().length > 0).length;

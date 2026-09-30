@@ -35,7 +35,12 @@ test('shouldPlan：启发式——短输入不规划', () => {
 
 test('parsePlan：把结构化计划转成 TodoItem（首步 in_progress）', () => {
   const todos = parsePlan(
-    { steps: [{ title: '创建文件', verify: '文件存在' }, { title: '运行', verify: '输出 OK' }] },
+    {
+      steps: [
+        { title: '创建文件', verify: '文件存在' },
+        { title: '运行', verify: '输出 OK' },
+      ],
+    },
     8,
   );
   assert.equal(todos.length, 2);

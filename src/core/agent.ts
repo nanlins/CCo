@@ -756,7 +756,12 @@ export class Agent {
       });
       /* 规划调用计入成本与调用次数（可观测性：规划不是"免费"的） */
       this.llmCallsThisRun += 1;
-      this.transcript.log('llm_call', { model: resp.model, stopReason: resp.stopReason, purpose: 'plan', usage: resp.usage });
+      this.transcript.log('llm_call', {
+        model: resp.model,
+        stopReason: resp.stopReason,
+        purpose: 'plan',
+        usage: resp.usage,
+      });
       if (resp.usage) this.usage.record(resp.model, resp.usage);
       const todos = parsePlan(resp.structured, this.config.planMaxSteps ?? 8);
       if (todos.length === 0) {
@@ -774,7 +779,10 @@ export class Agent {
       });
     } catch (err) {
       /* 规划失败不阻断任务：直接进入无计划执行 */
-      this.emit({ type: 'system', message: `[plan] 规划失败（${err instanceof Error ? err.message : String(err)}），直接执行` });
+      this.emit({
+        type: 'system',
+        message: `[plan] 规划失败（${err instanceof Error ? err.message : String(err)}），直接执行`,
+      });
       this.transcript.log('plan_failed', { error: String(err) });
     }
   }
@@ -858,9 +866,10 @@ export class Agent {
       }
     }
     const outSoFar = this.usage.summary().totalOutput - usageBefore.totalOutput;
-    const checklistBlock = this.checklist.length > 0
-      ? ['## 交付检查表', ...this.checklist.map((q, i) => `${i + 1}. ${q} — 未完成`), ''].join('\n')
-      : '';
+    const checklistBlock =
+      this.checklist.length > 0
+        ? ['## 交付检查表', ...this.checklist.map((q, i) => `${i + 1}. ${q} — 未完成`), ''].join('\n')
+        : '';
     return [
       '## 已完成检查',
       `- ${turnsUsed} 轮、${toolTotal} 次工具调用${breakdown ? `（${breakdown}）` : ''}，输出 ${outSoFar} token`,
@@ -1133,9 +1142,7 @@ export class Agent {
     const extra: string[] = [];
     /* 研究任务：注入交付检查表 + 阅读策略 + 只读约束 */
     if (this.researchMode && this.checklist.length > 0) {
-      extra.push(
-        buildResearchPrompt({ questions: this.checklist, readingPriority: RESEARCH_READING_PRIORITY }),
-      );
+      extra.push(buildResearchPrompt({ questions: this.checklist, readingPriority: RESEARCH_READING_PRIORITY }));
     }
     /* 规划模式：强调"按计划逐步执行、每步更新 Todo、未完成前不要跳到下一步" */
     if (this.planActive && this.session.todos.length > 0) {

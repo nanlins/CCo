@@ -24,7 +24,8 @@
     "lint": "eslint src tests bin eslint.config.js",
     "lint:fix": "eslint src tests bin eslint.config.js --fix",
     "format": "prettier --write src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml",
-    "format:check": "prettier --check src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml"
+    "format:check": "prettier --check src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml",
+    "prepare": "husky"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -43,6 +44,7 @@
     "@types/proper-lockfile": "^4.1.4",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
     "prettier": "^3.9.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
