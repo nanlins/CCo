@@ -5,7 +5,7 @@
 #
 # 端口说明（避开本机已有的 WSL Redis:6379 / 本地 PostgreSQL:5432）：
 #   redis    :6380  宿主机访问（容器内部 redis:6379）
-#   postgres :5434  宿主机访问（容器内部 postgres:5432）
+#   postgres :15434  宿主机访问（容器内部 postgres:5432；15434 避开 Windows 保留端口段）
 #
 # 用法：
 #   docker-compose up -d          # 启动 redis + postgres
@@ -13,7 +13,7 @@
 #
 # 终端应用连接（.env）：
 #   REDIS_URL=redis://localhost:6380
-#   PG_CONNECTION_STRING=postgres://postgres:491220@localhost:5434/ai_agent
+#   PG_CONNECTION_STRING=postgres://postgres:491220@localhost:15434/ai_agent
 
 version: '3.8'
 
@@ -41,7 +41,7 @@ services:
     image: pgvector/pgvector:pg17
     container_name: anvil-postgres
     ports:
-      - '5434:5432' # 宿主机 5434（避免与本地 PostgreSQL 5432 冲突）
+      - '15434:5432' # 宿主机 15434（避开本地 PostgreSQL 5432 与 Windows 保留端口段 5402-5501）
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=491220
@@ -66,3 +66,5 @@ networks:
   anvil-net:
     driver: bridge
 # docker-compose：Redis+PostgreSQL 基础设施编排
+# 修改记录：
+#   2026-10-02 postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）

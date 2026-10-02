@@ -66,15 +66,15 @@ docker-compose up -d
 
 # 3. 终端应用连接（.env）
 #    REDIS_URL=redis://localhost:6380
-#    PG_CONNECTION_STRING=postgres://postgres:491220@localhost:5434/ai_agent
+#    PG_CONNECTION_STRING=postgres://postgres:491220@localhost:15434/ai_agent
 ```
 
 ### 端口映射
 
-| 服务       | 容器           | 宿主机端口 | 说明                             |
-| ---------- | -------------- | ---------- | -------------------------------- |
-| PostgreSQL | anvil-postgres | `:5434`    | pgAdmin 连接用（避开本机 5432）  |
-| Redis      | anvil-redis    | `:6380`    | 缓存/限流（避开 WSL Redis 6379） |
+| 服务       | 容器           | 宿主机端口 | 说明                                         |
+| ---------- | -------------- | ---------- | -------------------------------------------- |
+| PostgreSQL | anvil-postgres | `:15434`   | pgAdmin 连接用（避开本机 5432 / 保留端口段） |
+| Redis      | anvil-redis    | `:6380`    | 缓存/限流（避开 WSL Redis 6379）             |
 
 > 镜像版本：PostgreSQL 用 `pgvector/pgvector:pg17`（带向量扩展），Redis 用 `redis:7-alpine`。
 > 容器间通过内部网络通信（`redis:6379` / `postgres:5432`），不受宿主机端口冲突影响。
@@ -378,3 +378,5 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
   - README.md：新增 CI badge、历史说明与修改记录小节
 
 - 2026-10-02：补充基础设施镜像版本（pgvector:pg17/5434、redis:7-alpine/6380）
+
+- 2026-10-02：postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）
