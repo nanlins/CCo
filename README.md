@@ -76,6 +76,7 @@ docker-compose up -d
 | PostgreSQL | anvil-postgres | `:5434`    | pgAdmin 连接用（避开本机 5432）  |
 | Redis      | anvil-redis    | `:6380`    | 缓存/限流（避开 WSL Redis 6379） |
 
+> 镜像版本：PostgreSQL 用 `pgvector/pgvector:pg17`（带向量扩展），Redis 用 `redis:7-alpine`。
 > 容器间通过内部网络通信（`redis:6379` / `postgres:5432`），不受宿主机端口冲突影响。
 
 ### 常用命令
@@ -375,3 +376,5 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
   - package.json：新增 prepare 脚本与 husky devDependency；.husky/pre-commit：提交前执行 format:check（纯 JSON 不便注释，用途在此说明）
   - .github/workflows/ci-cd.yml：docker job 增加 hashFiles('Dockerfile') 守卫
   - README.md：新增 CI badge、历史说明与修改记录小节
+
+- 2026-10-02：补充基础设施镜像版本（pgvector:pg17/5434、redis:7-alpine/6380）
