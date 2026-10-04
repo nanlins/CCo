@@ -19,6 +19,11 @@ const bashSchema = z.object({
   run_in_background: z.boolean().optional(),
 });
 
+/** 采集命令退出码到会话（供 Stop 闸门的 commandExit0 verifier 真实验证）。 */
+function recordCommandResult(ctx: ToolContext, command: string, exitCode: number | null): void {
+  (ctx.session.commandResults ??= []).push({ command, exitCode: exitCode ?? -1 });
+}
+
 export function bashTool(bg?: BackgroundSystem): ToolDef {
   return {
     schema: {
@@ -48,7 +53,7 @@ export function bashTool(bg?: BackgroundSystem): ToolDef {
       if (cls.verdict === 'deny') return `Error: ${cls.reason}`;
 
       if (args.run_in_background && bg) {
-        const id = bg.start(command);
+        const id = bg.start(command, (r) => recordCommandResult(ctx, command, r.exitCode));
         return `[Background task ${id} started] Poll with bg_check.`;
       }
 
@@ -63,6 +68,7 @@ export function bashTool(bg?: BackgroundSystem): ToolDef {
           return 'Error: DOCKER_SANDBOX=1 但 docker 不可用（未安装或未启动）。请安装 Docker 或移除 DOCKER_SANDBOX。';
         }
         const { output, exitCode } = await docker.run(command, ctx.workdir);
+        recordCommandResult(ctx, command, exitCode);
         if (exitCode !== 0) return `Error: command exited with code ${exitCode}\n${output}`;
         return output || '（无输出）';
       }
@@ -72,7 +78,9 @@ export function bashTool(bg?: BackgroundSystem): ToolDef {
         sandboxCmd: ctx.config.sandboxCmd,
         maxOutputChars: ctx.config.maxToolOutputChars,
       });
-      return sandbox.run(command);
+      const result = await sandbox.runWithExit(command);
+      recordCommandResult(ctx, command, result.exitCode);
+      return result.output;
     },
   };
 }

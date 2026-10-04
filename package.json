@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "手搓 Claude Code — 从零构建的 Agent Harness（4 里程碑：循环 / 扩展 / 上下文 / 协作）",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nanlins/CCo.git"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -10,10 +15,16 @@
     "anvil": "bin/anvil.js",
     "小锤": "bin/anvil.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "eval": "node --import tsx tests/eval/run.ts",
@@ -25,7 +36,7 @@
     "lint:fix": "eslint src tests bin eslint.config.js --fix",
     "format": "prettier --write src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml",
     "format:check": "prettier --check src tests bin eslint.config.js *.json *.yml *.md .github/workflows/*.yml",
-    "prepare": "husky"
+    "prepare": "husky && npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

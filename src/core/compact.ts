@@ -17,6 +17,14 @@ import type { ReadFileState } from './readFileState.js';
 
 export interface CompactOptions {
   thresholdChars: number;
+  /** token 阈值（主闸门）：估算输入 token 超此值即触发 L3 落盘。 */
+  thresholdTokens: number;
+  /** 输入 token 预算上限（80% 触发预警提示）。 */
+  budgetTokens: number;
+  /** L1 snip 的 token 触发阈值（消息数未超但 token 超限也裁中段）。 */
+  snipTokens: number;
+  /** 只读长输出预览保留字符数（L2 截断）。 */
+  previewChars: number;
   maxMessages: number;
   keepHead: number;
   keepRecentToolResults: number;
@@ -34,10 +42,53 @@ const DEFAULTS = {
   keepHead: 3,
   keepRecentToolResults: 3,
   maxToolResultChars: 200_000,
+  thresholdTokens: 40_000,
+  budgetTokens: 100_000,
+  snipTokens: 60_000,
+  previewChars: 1200,
 };
 
 /** 知识类工具的结果是 agent 推理的依据，压缩掉会造成"读了后面忘了前面"。 */
 const KNOWLEDGE_TOOLS = new Set(['read_file', 'pdf_parsing', 'search_docs']);
+
+/** 只读长输出：L2 用"预览截断"而非 40 字占位，保留头部供快速回顾。 */
+const PREVIEW_TOOLS = new Set([
+  'read_file',
+  'list_files',
+  'grep',
+  'glob',
+  'pdf_parsing',
+  'search_docs',
+  'bash',
+  'bg_check',
+  'web_fetch',
+]);
+
+/** 粗略 token 估算：CJK/全角字符约 1 token，其余约 4 字符/token。 */
+export function estimateTokens(text: string): number {
+  let cjk = 0;
+  for (const ch of text) {
+    if ((ch.codePointAt(0) ?? 0) >= 0x2e80) cjk += 1;
+  }
+  return cjk + Math.ceil((text.length - cjk) / 4);
+}
+
+/** 估算整段消息的输入 token（含 tool_use 参数与 tool_result 内容）。 */
+export function countMessageTokens(messages: Message[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (typeof m.content === 'string') {
+      total += estimateTokens(m.content);
+      continue;
+    }
+    for (const b of m.content) {
+      if (b.type === 'text') total += estimateTokens(b.text);
+      else if (b.type === 'tool_use') total += estimateTokens(JSON.stringify(b.input)) + 20;
+      else if (isToolResultBlock(b)) total += estimateTokens(b.content);
+    }
+  }
+  return total;
+}
 
 /** 扫描全部消息，建立 tool_use_id -> { name, path } 映射，用于识别每个 tool_result 的来源。 */
 function buildToolMap(messages: Message[]): Map<string, { name: string; path?: string }> {
@@ -79,6 +130,11 @@ export function compactMessages(messages: Message[], opts: Partial<CompactOption
   msgs = toolResultBudget(msgs, o, toolMap);
   msgs = snipCompact(msgs, o);
   msgs = microCompact(msgs, o, toolMap);
+  /* token 预算上限提示：接近预算时给出可操作反馈（避免无声撞上 prompt_too_long） */
+  const tokens = countMessageTokens(msgs);
+  if (tokens > o.budgetTokens * 0.8) {
+    o.onAction?.(`[compact] ⚠ 输入约 ${tokens} tokens，接近预算 ${o.budgetTokens}；建议 /compact 或拆分子任务`);
+  }
   return msgs;
 }
 
@@ -117,23 +173,24 @@ function toolResultBudget(
       persistLargestResults(results, total - o.maxToolResultChars, o, toolMap);
     }
   }
-  /* 通道 2（阈值闸门）：全量字符数超过 thresholdChars → 对历史中最大的结果落盘，
+  /* 通道 2（双闸门）：估算输入 token 超阈值 或 字符数超阈值 → 对历史中最大的结果落盘，
      直到回到阈值以下。这是 0-API 的主动压缩，防止直接撞上 prompt_too_long。 */
+  const tokens = countMessageTokens(messages);
   const chars = countChars(messages);
-  if (chars > o.thresholdChars) {
+  if (tokens > o.thresholdTokens || chars > o.thresholdChars) {
     const all: ToolResultBlock[] = [];
     for (const m of messages) {
       for (const b of messageBlocks(m)) {
         if (!isToolResultBlock(b) || b.content.length <= 2500 || b.content.startsWith('<persisted-output')) continue;
-        /* 知识类（read_file 等）不在此落盘：落盘后模型只见 2000 字预览会绕道 bash，
-           重读又再次超阈→"循环持久化"。知识溢出交给 L4 摘要+恢复机制处理。 */
+        /* 知识类（read_file 等）不在此落盘：由 L2 预览截断处理，避免"落盘→重读→再超阈"循环。 */
         const src = toolMap.get(b.tool_use_id);
         if (src && KNOWLEDGE_TOOLS.has(src.name)) continue;
         all.push(b);
       }
     }
     if (all.length > 0) {
-      persistLargestResults(all, chars - o.thresholdChars, o, toolMap);
+      const freedChars = Math.max(chars - o.thresholdChars, (tokens - o.thresholdTokens) * 3);
+      persistLargestResults(all, freedChars, o, toolMap);
     }
   }
   return messages;
@@ -156,7 +213,7 @@ function persistLargestResults(
     const originalLen = r.content.length;
     const fname = `tool_result_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.txt`;
     fs.writeFileSync(path.join(o.persistDir, fname), r.content, 'utf8');
-    r.content = `<persisted-output file="${fname}" note="Full content on disk; read it back if needed.">\n${r.content.slice(0, 2000)}`;
+    r.content = `<persisted-output file="${fname}" note="Full content on disk; read it back if needed.">\n${r.content.slice(0, o.previewChars)}`;
     budget -= originalLen - r.content.length;
     persisted += 1;
     o.onAction?.(`[compact L3] persisted ${fname}`);
@@ -181,8 +238,12 @@ function isToolResultMessage(m: Message): boolean {
 }
 
 export function snipCompact(messages: Message[], o: CompactOptions): Message[] {
-  if (messages.length <= o.maxMessages) return messages;
-  const keepTail = o.maxMessages - o.keepHead;
+  const overTokens = countMessageTokens(messages) > o.snipTokens;
+  if (messages.length <= o.maxMessages && !overTokens) return messages;
+  /* token 超限但消息数未超：仍裁中段（保留头部 + 最近约一半） */
+  const keepTail = overTokens
+    ? Math.max(4, Math.min(o.maxMessages - o.keepHead, Math.floor(messages.length * 0.5)))
+    : o.maxMessages - o.keepHead;
   let headEnd = o.keepHead;
   let tailStart = messages.length - keepTail;
 
@@ -263,9 +324,15 @@ export function microCompact(
   for (const block of toCompact) {
     if (block.content.length <= 120) continue;
     if (block.content.startsWith('[Earlier tool result compacted')) continue;
+    if (block.content.startsWith('<persisted-output')) continue; // 已落盘
     const src = toolMap.get(block.tool_use_id);
-    /* 知识类工具的结果保留原文，防止"读了后面忘了前面" */
-    if (src && KNOWLEDGE_TOOLS.has(src.name)) {
+    /* 只读长输出（read_file/list_files/grep/git status 等）：预览截断而非 40 字占位。
+       保留头部供快速回顾；需要完整内容时模型可重新读取。 */
+    if (src && PREVIEW_TOOLS.has(src.name)) {
+      if (block.content.length > o.previewChars) {
+        block.content = `${block.content.slice(0, o.previewChars)}\n…[truncated ${block.content.length - o.previewChars} chars; re-read if needed]`;
+        compacted += 1;
+      }
       continue;
     }
     block.content = '[Earlier tool result compacted. Re-run if needed.]';

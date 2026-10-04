@@ -43,7 +43,31 @@ npm link
 anvil              # 或：小锤
 ```
 
-> 说明：`npm link` 创建全局符号链接，改项目代码即时生效。
+> 说明：`npm link` 创建全局符号链接。默认 `anvil`/`小锤` 命令跑编译后的 `dist`；改 `src` 后须 `npm run build` 重建，或用 `npm start` 直接跑源码。`bin/anvil.js` 现在会自动检测 `src` 是否比 `dist` 新，新于 `dist` 时打印告警并回退源码模式。
+
+### 开发态 vs 全局命令
+
+```bash
+# 开发态（推荐）：改即生效，不依赖 dist
+npm start                  # tsx 直接跑 src/main.ts；Ctrl+C 退出
+ANVIL_USE_DIST=0 npm start # 等效
+
+# 全局命令（任意目录启动）：
+npm link                   # 安装全局符号链接（package.json "prepare" 会自动 npm run build）
+anvil                      # 或：小锤，工作区 = 当前目录
+```
+
+**入口模式优先级**（`bin/anvil.js` 的 `resolveEntryMode`）：
+
+| 条件                          | 模式 | 行为                                                  |
+| ----------------------------- | ---- | ----------------------------------------------------- |
+| `dist/main.js` 缺失           | 源码 | 通过 tsx 跑 `src/main.ts`                             |
+| `ANVIL_USE_DIST=0`            | 源码 | 强制源码（跳过 mtime 比较）                           |
+| `ANVIL_USE_DIST=1`            | dist | 强制 dist（跳过 mtime 比较）                          |
+| 任一 `src/**/*.ts` 比 dist 新 | 源码 | 打印 `[anvil] dist 落后于 src，…` 告警，再跑 tsx 源码 |
+| dist 新于等于所有 src         | dist | 照常跑 `dist/main.js`                                 |
+
+> **告警场景**：当 `npm run build` 后 `src` 不变（dist ≥ src），无告警。修改 `src` 但忘记 build、直接 `anvil`，会收到橙色告警并自动回退源码——更新立刻可见，不会跑旧 dist。
 
 演示：`MOCK=1` 下输入任意问题，会看到 agent 循环跑完"写文件 → 读文件 → 总结"三步（mock 剧本），
 验证循环、工具分发、权限、压缩、记忆、transcript 全链路。
@@ -66,7 +90,7 @@ docker-compose up -d
 
 # 3. 终端应用连接（.env）
 #    REDIS_URL=redis://localhost:6380
-#    PG_CONNECTION_STRING=postgres://postgres:491220@localhost:15434/ai_agent
+#    PG_CONNECTION_STRING=postgres://postgres:<你的密码>@localhost:15434/ai_agent
 ```
 
 ### 端口映射
@@ -223,8 +247,9 @@ docker-compose down -v         # 停止 + 删除数据卷
 | `ANVIL_LANG`                                                       | 界面语言 `zh` / `en`（运行时 `/lang` 切换）                                      | `zh`                        |
 | `REDIS_URL`                                                        | Redis 连接（工具缓存+限流+会话状态）                                             | —                           |
 | `VECTOR_STORE`                                                     | 向量存储：`memory` / `pg`                                                        | `memory`                    |
-| `PG_CONNECTION_STRING`                                             | PostgreSQL 连接（pgvector）                                                      | —                           |
+| `PG_CONNECTION_STRING`                                             | PostgreSQL 连接（pgvector），端口需与 docker-compose 一致（15434）               | —                           |
 | `EMBEDDING_BASE_URL/KEY/MODEL`                                     | 语义 embedding（缺省本地哈希）                                                   | —                           |
+| `POSTGRES_PASSWORD`                                                | docker-compose 内 PostgreSQL 密码（仅 .env，不提交）                             | —                           |
 | `MAX_TOKENS` / `COMPACT_THRESHOLD_CHARS` / `MAX_TOOL_OUTPUT_CHARS` | 上限参数                                                                         | 8192 / 50000 / 50000        |
 | `MAX_REPEAT_TOOL_CALLS`                                            | 同一工具调用连续执行上限（超过即拦截，防盲目重试）                               | `2`                         |
 | `MAX_TOOL_CALLS_PER_RUN`                                           | 单次 run 工具调用上限（80% 预警，耗尽进入最终报告模式）                          | `80`                        |
@@ -238,6 +263,8 @@ docker-compose down -v         # 停止 + 删除数据卷
 | `RETRY_DELAY_MS`                                                   | 重试退避延迟（毫秒，缺省指数退避；测试加速用）                                   | —                           |
 | `MOCK`                                                             | 1 = 离线演示                                                                     | `0`                         |
 
+> ⚠ **密码卫生**：真实 `POSTGRES_PASSWORD` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 仅经 compose/环境注入到被 `.gitignore` 忽略的 `.env`，任何源码、测试、日志、示例都不得出现。**若曾外泄请立即轮换**。
+
 ## REPL 命令
 
 `/help` `/clear` `/tools` `/config` `/compact` `/tasks` `/memory` `/team` `/mode [ask|auto|deny|bypass]` `/model [模型ID]` `/apikey [sk-xxx]` `/baseurl [url]` `/protocol [anthropic|openai]` `/resume` `/sessions` `/session-delete` `/export [md|json] [路径]` `/plugins` `/plugin-install` `/plugin-uninstall` `/usage` `/lang [zh|en]` `/exit`
@@ -250,14 +277,14 @@ docker-compose down -v         # 停止 + 删除数据卷
 
 ## 权限模式（重要）
 
-| 模式     | 行为                                                                                                                                 |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `ask`    | 非明确 safe 的操作一律询问用户（默认）                                                                                               |
-| `auto`   | **仅明确 safe 分类自动放行**（只读白名单命令 / 工作区内写入 / classifier=safe）；未知或危险命令仍转人工审批                          |
-| `deny`   | 拒绝一切需审批操作（只读工具除外）                                                                                                   |
-| `bypass` | **显式全放行**（承接旧版 auto 的放行语义）。⚠ 风险：不再有任何人工审批，等同把 shell 完全交给模型，仅建议在隔离容器/一次性环境中使用 |
+| 模式     | 行为                                                                                                                                                     |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ask`    | 非明确 safe 的操作一律询问用户（默认）                                                                                                                   |
+| `auto`   | **自动放行"非危险"操作**（只读白名单 / 工作区内写入 / classifier=safe / 非 deny 的 shell 命令）；deny list 危险命令仍拒绝，classifier 判 unsafe 仍转人工 |
+| `deny`   | 拒绝一切需审批操作（只读工具除外）                                                                                                                       |
+| `bypass` | **显式全放行**（承接旧版 auto 的放行语义）。⚠ 风险：不再有任何人工审批，等同把 shell 完全交给模型，仅建议在隔离容器/一次性环境中使用                     |
 
-> 设计说明：旧版 `auto` 会把未识别的危险 bash 命令自动放行，属于安全缺陷；现已把该语义迁移到显式的 `bypass`，`auto` 回归"只放行明确 safe"。
+> 设计说明：旧版 `auto` 会把未识别的危险 bash 命令自动放行，属于安全缺陷；现已把该语义迁移到显式的 `bypass`。当前 `auto` = 审批卡 `[t]` 切换后的行为：deny list 拦截危险命令、classifier 判 unsafe 仍转人工，其余非危险命令不再逐条询问。`ask` 模式保持逐项询问。
 
 ## 使用者的模型配置（推送到 GitHub 后其他人怎么用）
 
@@ -380,3 +407,5 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
 - 2026-10-02：补充基础设施镜像版本（pgvector:pg17/5434、redis:7-alpine/6380）
 
 - 2026-10-02：postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）
+
+- 2026-10-03：移除硬编码数据库密码（改环境变量注入）；新增终端主题（truecolor/16色/NO_COLOR 四级降级）、项目指令加载（ANVIL.md/CLAUDE.md/AGENTS.md）、外部 hook 加载、工作流运行时与目标裁判

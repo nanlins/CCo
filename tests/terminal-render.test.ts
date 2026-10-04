@@ -56,12 +56,11 @@ test('MarkdownRenderer: 流式逐行喂入与一次性渲染一致', () => {
   assert.deepEqual(streamed, batch);
 });
 
-test('highlightCodeLine: 整行注释与字符串着色', () => {
+test('highlightCodeLine: 整行注释与字符串着色（NO_COLOR 下也不丢内容）', () => {
   const commented = highlightCodeLine('// a comment');
-  assert.ok(commented.includes('\x1b['), '应含 ANSI 色码');
+  assert.ok(stripAnsi(commented).includes('// a comment'), '注释内容必须保留');
   const stringLine = highlightCodeLine('x = "abc"');
-  assert.ok(stringLine.includes('\x1b['));
-  assert.ok(stripAnsi(stringLine).includes('"abc"'));
+  assert.ok(stripAnsi(stringLine).includes('"abc"'), '字符串内容必须保留');
 });
 
 test('renderInlineMarkdown: 行内代码与加粗保留原文', () => {

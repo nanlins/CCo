@@ -101,10 +101,68 @@ export class PluginMarket {
     return null;
   }
 
-  /** 搜索远程 plugin（预留接口，当前返回空）。 */
-  async searchRegistry(_query: string): Promise<PluginInfo[]> {
-    /* TODO: 实现远程 registry 搜索 */
-    return [];
+  /** 远程 registry 环境变量（指向 JSON 索引）。 */
+  static readonly REGISTRY_ENV = 'ANVIL_PLUGIN_REGISTRY';
+
+  /** 目标是否位于目录内（防路径穿越）。 */
+  private static insideDir(root: string, target: string): boolean {
+    const rel = path.relative(path.resolve(root), path.resolve(target));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  }
+
+  private registryUrl(): string | undefined {
+    const url = process.env[PluginMarket.REGISTRY_ENV]?.trim();
+    return url || undefined;
+  }
+
+  /** 远程 registry 状态（供 /plugins /plugin-search 展示，避免"看起来能用"的死入口）。 */
+  registryStatus(): { configured: boolean; url?: string; hint: string } {
+    const url = this.registryUrl();
+    if (!url) {
+      return {
+        configured: false,
+        hint: `未配置远程 registry：设置环境变量 ${PluginMarket.REGISTRY_ENV}=<JSON 索引 URL> 后启用远程搜索；本地安装用 /plugin-install <路径>。`,
+      };
+    }
+    return { configured: true, url, hint: `远程 registry: ${url}` };
+  }
+
+  /**
+   * 搜索远程 plugin。registry 未配置 → 返回空数组（调用方用 registryStatus().hint 提示）；
+   * 配置后真实拉取 JSON 索引并按 name/description 过滤。
+   */
+  async searchRegistry(query: string): Promise<PluginInfo[]> {
+    const url = this.registryUrl();
+    if (!url) return [];
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) throw new Error(`registry 请求失败: HTTP ${resp.status}`);
+    const data = (await resp.json()) as unknown;
+    const list: unknown[] = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { plugins?: unknown[] })?.plugins)
+        ? (data as { plugins: unknown[] }).plugins
+        : [];
+    const q = query.trim().toLowerCase();
+    const installed = new Set(this.listInstalled().map((p) => p.name));
+    return list
+      .map((p) => p as Record<string, unknown>)
+      .filter(
+        (p) =>
+          !q ||
+          String(p.name ?? '')
+            .toLowerCase()
+            .includes(q) ||
+          String(p.description ?? '')
+            .toLowerCase()
+            .includes(q),
+      )
+      .map((p) => ({
+        name: String(p.name ?? ''),
+        description: String(p.description ?? ''),
+        version: p.version !== undefined ? String(p.version) : undefined,
+        author: p.author !== undefined ? String(p.author) : undefined,
+        installed: installed.has(String(p.name ?? '')),
+      }));
   }
 
   /** 安装 plugin（从 URL 或本地路径）。 */
@@ -124,12 +182,47 @@ export class PluginMarket {
       }
     }
 
-    /* URL 安装（预留） */
-    if (source.startsWith('http://') || source.startsWith('https://')) {
-      return { success: false, message: 'Remote install not implemented yet' };
+    /* 远程安装：JSON 插件包 { name, description?, files: { "<相对路径>": "<内容>" } } */
+    if (/^https?:\/\//.test(source)) {
+      if (!source.endsWith('.json')) {
+        return {
+          success: false,
+          message: `远程安装仅支持 JSON 插件包（URL 以 .json 结尾）；当前: ${source}。也可用本地路径安装。`,
+        };
+      }
+      try {
+        const resp = await fetch(source, { signal: AbortSignal.timeout(20_000) });
+        if (!resp.ok) return { success: false, message: `下载失败: HTTP ${resp.status}` };
+        const pack = (await resp.json()) as { name?: unknown; files?: unknown };
+        const name = String(pack.name ?? '').trim();
+        if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+          return { success: false, message: `插件包 name 非法（仅允许字母数字._-）: ${name || '(空)'}` };
+        }
+        if (!pack.files || typeof pack.files !== 'object') {
+          return { success: false, message: '插件包缺少 files 映射（需 {name, files:{"SKILL.md":"…"}}）' };
+        }
+        const targetPath = path.join(this.skillsDir, name);
+        if (fs.existsSync(targetPath)) return { success: false, message: `Plugin '${name}' already installed` };
+        const entries = Object.entries(pack.files as Record<string, unknown>);
+        /* 先全量校验路径，任一越界即拒绝（防 ../ 穿越） */
+        for (const [rel] of entries) {
+          if (!PluginMarket.insideDir(targetPath, path.resolve(targetPath, rel))) {
+            return { success: false, message: `插件包含越界路径，已拒绝: ${rel}` };
+          }
+        }
+        fs.mkdirSync(targetPath, { recursive: true });
+        for (const [rel, content] of entries) {
+          const dest = path.resolve(targetPath, rel);
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.writeFileSync(dest, String(content), 'utf8');
+        }
+        return { success: true, message: `Installed '${name}' from URL（${entries.length} 个文件）` };
+      } catch (err) {
+        return { success: false, message: `远程安装失败: ${err instanceof Error ? err.message : String(err)}` };
+      }
     }
 
-    return { success: false, message: `Unknown source: ${source}` };
+    return { success: false, message: `未知来源: ${source}（支持本地路径或 http(s) JSON 插件包 URL）` };
   }
 
   /** 卸载 plugin。名称可以是安装目录名，也可以是 manifest/SKILL.md 里的显示名。 */

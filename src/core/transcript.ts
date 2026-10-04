@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Message, TodoItem } from '../types.js';
+import { safeWrite } from './safeWrite.js';
 
 /** 会话完整快照（v2）：messages + todos + readFileState + session id，供 /resume 全量恢复。 */
 export interface SessionSnapshot {
@@ -29,6 +30,8 @@ export interface SessionSnapshot {
   sessionMemory?: string;
 }
 
+/** 写失败降级：只告警一次，绝不抛出（工作区只读时保持内存态，不中断 agent.run）。 */
+
 export class Transcript {
   private file: string;
   private lines: Array<Record<string, unknown>> = [];
@@ -38,7 +41,7 @@ export class Transcript {
     private sessionId: string,
   ) {
     this.file = path.join(dir, `${sessionId}.jsonl`);
-    fs.mkdirSync(dir, { recursive: true });
+    safeWrite(() => fs.mkdirSync(dir, { recursive: true }), 'transcript 目录');
   }
 
   /** 快照目录（/resume 恢复时用于重建 Transcript）。 */
@@ -49,7 +52,7 @@ export class Transcript {
   log(event: string, data?: Record<string, unknown>): void {
     const line = { ts: new Date().toISOString(), session: this.sessionId, event, ...data };
     this.lines.push(line);
-    fs.appendFileSync(this.file, JSON.stringify(line) + '\n', 'utf8');
+    safeWrite(() => fs.appendFileSync(this.file, JSON.stringify(line) + '\n', 'utf8'), 'transcript ');
   }
 
   /** 供 REPL /compact 等命令查看最近事件。 */
@@ -65,12 +68,15 @@ export class Transcript {
 
   /** 保存完整消息快照（覆盖式，供会话恢复）。 */
   saveSnapshot(messages: Message[]): void {
-    fs.writeFileSync(this.snapshotFile(), JSON.stringify(messages, null, 2), 'utf8');
+    safeWrite(
+      () => fs.writeFileSync(this.snapshotFile(), JSON.stringify(messages, null, 2), 'utf8'),
+      'transcript 快照',
+    );
   }
 
   /** 保存完整会话快照（messages + todos + readPaths，v2 格式）。 */
   saveSessionSnapshot(snap: SessionSnapshot): void {
-    fs.writeFileSync(this.snapshotFile(), JSON.stringify(snap, null, 2), 'utf8');
+    safeWrite(() => fs.writeFileSync(this.snapshotFile(), JSON.stringify(snap, null, 2), 'utf8'), 'transcript 快照');
   }
 
   /** 读取快照；兼容旧格式（纯 messages 数组）；不存在返回 null。 */
@@ -112,11 +118,11 @@ export class AuditLog {
 
   constructor(private dir: string) {
     this.file = path.join(dir, 'events.jsonl');
-    fs.mkdirSync(dir, { recursive: true });
+    safeWrite(() => fs.mkdirSync(dir, { recursive: true }), 'audit 目录');
   }
 
   event(type: string, data?: Record<string, unknown>): void {
     const line = { ts: new Date().toISOString(), type, ...data };
-    fs.appendFileSync(this.file, JSON.stringify(line) + '\n', 'utf8');
+    safeWrite(() => fs.appendFileSync(this.file, JSON.stringify(line) + '\n', 'utf8'), 'audit ');
   }
 }

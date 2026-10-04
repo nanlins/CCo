@@ -48,8 +48,13 @@ const PS_SYNTAX_RX = /\$(env:|[A-Za-z_{])|@\(/;
 /**
  * 按命令内容选择 shell（纯函数，供 Sandbox / BackgroundSystem 共用与单测）。
  * Windows：出现 PowerShell cmdlet 或 PS 语法 → powershell.exe；否则 cmd.exe。
+ *
+ * cmd.exe 引号安全：`cmd /s /c` 会剥掉命令串首尾引号，而 Node 默认会给含空格参数
+ * 加 `\"` 转义（cmd 不认这种转义，`git commit -m "msg"` 会因此损坏）。故这里手动
+ * 给命令包一层引号并置 verbatim=true（spawn 时 windowsVerbatimArguments），
+ * 让命令原样送达 cmd，内层引号完整保留。
  */
-export function pickShellArgs(command: string): { shell: string; args: string[] } {
+export function pickShellArgs(command: string): { shell: string; args: string[]; verbatim?: boolean } {
   if (process.platform === 'win32') {
     if (PS_CMDLET_RX.test(command) || PS_SYNTAX_RX.test(command)) {
       return {
@@ -57,7 +62,11 @@ export function pickShellArgs(command: string): { shell: string; args: string[] 
         args: ['-NoProfile', '-NonInteractive', '-NoLogo', '-Command', command],
       };
     }
-    return { shell: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', command] };
+    return {
+      shell: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${command}"`],
+      verbatim: true,
+    };
   }
   return { shell: '/bin/sh', args: ['-lc', command] };
 }
@@ -113,15 +122,25 @@ export class Sandbox {
   }
 
   async run(command: string): Promise<string> {
+    return (await this.runWithExit(command)).output;
+  }
+
+  /**
+   * 同 run，但额外返回退出码（供 commandExit0 verifier 采集）。
+   * 被 deny list 拦截 / 超时 → exitCode=null（不等于成功）。
+   */
+  async runWithExit(command: string): Promise<{ output: string; exitCode: number | null }> {
     const blocked = Sandbox.blockedByDenyList(command);
-    if (blocked) return `Error: ${blocked}`;
+    if (blocked) return { output: `Error: ${blocked}`, exitCode: null };
 
     const finalCommand = this.opts.sandboxCmd ? `${this.opts.sandboxCmd} ${command}` : command;
-    const { shell, args } = pickShellArgs(finalCommand);
+    const { shell, args, verbatim } = pickShellArgs(finalCommand);
 
     const child = spawn(shell, args, {
       cwd: this.opts.cwd,
       windowsHide: true,
+      /* cmd.exe + 已手动包裹引号：禁用 Node 的 `\"` 转义（cmd 不认），命令原样送达 */
+      windowsVerbatimArguments: verbatim,
       /* POSIX 独立进程组：超时可整组杀掉；Windows 靠 taskkill /t 杀树 */
       detached: process.platform !== 'win32',
     });
@@ -158,16 +177,22 @@ export class Sandbox {
     clearTimeout(timer);
 
     if (timedOut) {
-      return `Error: command timed out after ${timeoutMs}ms\nCommand: ${command.slice(0, 300)}\nHint: 拆分为更小的步骤，或使用 run_in_background=true 放后台执行。`;
+      return {
+        output: `Error: command timed out after ${timeoutMs}ms\nCommand: ${command.slice(0, 300)}\nHint: 拆分为更小的步骤，或使用 run_in_background=true 放后台执行。`,
+        exitCode: null,
+      };
     }
 
     const truncated = out.length >= max;
     const trimmed = out.trim();
     /* 非零退出码 → 结构化错误（让模型一次修正，而不是反复重试同一条命令） */
     if (code !== 0) {
-      return formatShellError(command, code, trimmed);
+      return { output: formatShellError(command, code, trimmed), exitCode: code ?? null };
     }
-    if (!trimmed) return '（无输出）';
-    return truncated ? trimmed.slice(0, max) + '\n...[output truncated]' : trimmed;
+    if (!trimmed) return { output: '（无输出）', exitCode: code ?? 0 };
+    return {
+      output: truncated ? trimmed.slice(0, max) + '\n...[output truncated]' : trimmed,
+      exitCode: code ?? 0,
+    };
   }
 }

@@ -32,7 +32,7 @@ import type { LogLevel, Message, Session, TodoItem, ToolContext, ToolResultBlock
 import { isToolUseBlock, lastText } from '../types.js';
 import type { ToolUseBlock } from '../types.js';
 import { assembleSystemPrompt } from './prompt.js';
-import { compactHistory, compactMessages } from './compact.js';
+import { compactHistory, compactMessages, countMessageTokens } from './compact.js';
 import { callWithRetry, isFatalQuotaError, isRateLimitError, humanizeLlmError } from './recovery.js';
 import { detectPromptInjection } from './security.js';
 import { UsageTracker } from './usage.js';
@@ -131,6 +131,9 @@ function finalReportReminder(reason: string, checklist?: string[]): string {
 /** 结果本质是外部不可信内容的工具：输出包 <untrusted-content> 隔离（docs/04 §4.12）。 */
 const EXTERNAL_CONTENT_TOOLS = new Set(['web_search', 'web_extractor', 'pdf_parsing', 'search_docs']);
 
+/** 宽泛探测类工具：连续多次不进入实质执行时追加提醒（P2-6 软性提示，不强制中断）。 */
+const PROBING_TOOLS = new Set(['list_files', 'glob']);
+
 export class Agent {
   private config: AppConfig;
   private llm: LlmClient;
@@ -188,6 +191,8 @@ export class Agent {
   private toolLimits = new Map<string, number>();
   /** 研究任务低价值循环检测：路径指纹 → 连续命中次数。 */
   private pathRepeat = new Map<string, number>();
+  /** 连续宽泛探测工具调用次数（list_files/glob），≥5 时在 system prompt 追加提醒。 */
+  private consecutiveProbing = 0;
   /** 是否只读研究任务。 */
   private researchMode: boolean;
   /** 交付检查表（必答问题清单，run 开始时提取，报告时核对）。 */
@@ -334,6 +339,10 @@ export class Agent {
     this.lastCallRepeat = 0;
     this.runBudgetWarned.clear();
     this.pathRepeat.clear();
+    /* 命令退出码按任务重置（commandExit0 verifier 只认本轮结果） */
+    this.session.commandResults = [];
+    /* 探测预算按任务重置 */
+    this.consecutiveProbing = 0;
     /* 研究任务：提取必答问题清单（交付检查表），随 system prompt 注入 */
     if (this.researchMode || isResearchTask(finalInput)) {
       this.checklist = extractQuestions(finalInput);
@@ -393,6 +402,10 @@ export class Agent {
       await this.hooks.trigger('PreCompact', { messagesCount: beforeCount });
       const compacted = compactMessages(this.session.messages, {
         thresholdChars: this.config.compactThresholdChars,
+        /* token 闸门与预算绑定（缺省 10 万）：40% 触发落盘、60% 触发 snip、80% 预警 */
+        budgetTokens: this.config.maxRunTotalTokens ?? 100_000,
+        thresholdTokens: Math.max(20_000, Math.floor((this.config.maxRunTotalTokens ?? 100_000) * 0.4)),
+        snipTokens: Math.max(30_000, Math.floor((this.config.maxRunTotalTokens ?? 100_000) * 0.6)),
         persistDir: path.join(this.session.cwd, '.task_outputs', 'tool-results'),
         readFileState: this.readFileState,
         baseDir: this.workdir(),
@@ -690,6 +703,8 @@ export class Agent {
       const dInput = u.totalInput - usageBefore.totalInput;
       const dOutput = u.totalOutput - usageBefore.totalOutput;
       const dCache = u.totalCacheRead - usageBefore.totalCacheRead;
+      /* 本 run 累计口径 vs 当前真实上下文（compact 估算），避免把累计输入误读为上下文大小 */
+      const contextTokens = countMessageTokens(this.session.messages);
       const stats = {
         turns: turnsUsed,
         toolCalls: toolTotal,
@@ -698,13 +713,15 @@ export class Agent {
         inputTokens: dInput,
         outputTokens: dOutput,
         cacheReadTokens: dCache,
+        contextTokens,
       };
       this.transcript.log('task_stats', stats);
       this.emit({
         type: 'system',
         message:
           `[stats] ${turnsUsed} turns · ${toolTotal} tool calls (${breakdown || 'none'}) · ` +
-          `${((Date.now() - runStart) / 1000).toFixed(1)}s · tokens in/out=${dInput}/${dOutput}` +
+          `${((Date.now() - runStart) / 1000).toFixed(1)}s · 累计 tokens in/out=${dInput}/${dOutput}` +
+          ` · 本轮上下文 约 ${Math.round(contextTokens / 1000)}k tok（估算）` +
           (dCache > 0 ? ` · cache_read=${dCache}` : ''),
       });
     } catch {
@@ -1135,6 +1152,9 @@ export class Agent {
       await this.redis.setToolCache(block.name, toolArgs, finalOutput);
     }
 
+    /* 探测预算：连续宽泛扫描计数；非探测工具重置（P2-6 软性提示） */
+    this.consecutiveProbing = PROBING_TOOLS.has(block.name) ? this.consecutiveProbing + 1 : 0;
+
     return { type: 'tool_result', tool_use_id: block.id, content: finalOutput };
   }
 
@@ -1155,6 +1175,17 @@ export class Agent {
         ].join('\n'),
       );
     }
+    /* 探测预算：连续宽泛扫描 ≥5 次时追加提醒（软性提示，不强制中断） */
+    if (this.consecutiveProbing >= 5) {
+      extra.push(
+        '<system-reminder>已连续执行多次宽泛文件系统探测（list_files/glob），请聚焦当前任务目标，停止宽泛扫描，直接进入实际执行。</system-reminder>',
+      );
+    }
+    /* 环境变量名（仅名字，不注入值）：连接串类配置存在时，引导模型用变量而非猜默认端口 */
+    const envVars: string[] = [];
+    if (this.config.redisUrl && process.env.REDIS_URL) envVars.push('REDIS_URL');
+    if (this.config.pgConnectionString && process.env.PG_CONNECTION_STRING) envVars.push('PG_CONNECTION_STRING');
+    if (this.config.embeddingBaseUrl && process.env.EMBEDDING_BASE_URL) envVars.push('EMBEDDING_BASE_URL');
     return assembleSystemPrompt({
       base: this.session.baseSystem,
       workdir: this.workdir(),
@@ -1164,6 +1195,7 @@ export class Agent {
       memory: this.memory.catalog(),
       todos: this.session.todos,
       extra,
+      envVars,
     });
   }
 

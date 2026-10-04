@@ -31,23 +31,28 @@ export class BackgroundSystem {
   /**
    * 启动后台命令。与 bash 相同：先过 Sandbox deny list（纵深防御，后台不是后门）。
    * 命中 deny list 时抛错，由调用方转成 Error 结果。
+   * onResult（可选）：任务结束时回调退出码，供 commandExit0 verifier 采集。
    */
-  start(command: string): string {
+  start(command: string, onResult?: (r: { command: string; exitCode: number }) => void): string {
     const blocked = Sandbox.blockedByDenyList(command);
     if (blocked) throw new Error(blocked);
     const id = `bg_${Date.now()}_${this.seq++}`;
     const job: BackgroundJob = { id, status: 'running', startedAt: Date.now(), output: '' };
     this.jobs.set(id, job);
-    void this.run(id, command);
+    void this.run(id, command, onResult);
     return id;
   }
 
-  private async run(id: string, command: string): Promise<void> {
+  private async run(
+    id: string,
+    command: string,
+    onResult?: (r: { command: string; exitCode: number }) => void,
+  ): Promise<void> {
     const job = this.jobs.get(id);
     if (!job) return;
     /* 与 bash/Sandbox 相同的 shell 选择（cmd.exe vs PowerShell 自动识别） */
-    const { shell, args } = pickShellArgs(command);
-    const child = spawn(shell, args, { cwd: this.opts.cwd, windowsHide: true });
+    const { shell, args, verbatim } = pickShellArgs(command);
+    const child = spawn(shell, args, { cwd: this.opts.cwd, windowsHide: true, windowsVerbatimArguments: verbatim });
     /* 与 bash/Sandbox 相同的默认超时与输出上限（后台不放宽边界）。 */
     const timeoutMs = this.opts.timeoutMs ?? 120_000;
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
@@ -83,6 +88,7 @@ export class BackgroundSystem {
     job.output = out;
     job.finishedAt = Date.now();
     job.status = child.killed ? 'timed_out' : code === 0 ? 'completed' : 'failed';
+    onResult?.({ command, exitCode: code ?? -1 });
   }
 
   get(id: string): BackgroundJob | undefined {

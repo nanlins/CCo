@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { LlmClient } from '../llm/client.js';
 import type { Message } from '../types.js';
 import { cosineSimilarity, type EmbeddingProvider } from '../rag/embedding.js';
+import { safeWrite } from './safeWrite.js';
 
 export interface MemoryEntry {
   name: string;
@@ -19,7 +20,7 @@ export interface MemoryEntry {
 
 export class MemoryStore {
   constructor(private dir: string) {
-    fs.mkdirSync(dir, { recursive: true });
+    safeWrite(() => fs.mkdirSync(dir, { recursive: true }), 'memory 目录');
   }
 
   private file(name: string): string {
@@ -28,7 +29,7 @@ export class MemoryStore {
 
   save(entry: MemoryEntry): string {
     const content = `---\nname: ${entry.name}\ndescription: ${entry.description}\n---\n\n${entry.body}`;
-    fs.writeFileSync(this.file(entry.name), content, 'utf8');
+    safeWrite(() => fs.writeFileSync(this.file(entry.name), content, 'utf8'), 'memory ');
     return `Saved memory '${entry.name}'`;
   }
 
@@ -257,8 +258,10 @@ export class MemoryStore {
     if (raw.length === 0) return { before, after: before };
 
     // 记录合并时间（锁文件 mtime 即 lastConsolidatedAt）
-    fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(this.lockFile(), JSON.stringify({ ts: Date.now() }), 'utf8');
+    safeWrite(() => {
+      fs.mkdirSync(this.dir, { recursive: true });
+      fs.writeFileSync(this.lockFile(), JSON.stringify({ ts: Date.now() }), 'utf8');
+    }, 'memory 锁');
 
     const valid: MemoryEntry[] = [];
     for (const item of raw) {

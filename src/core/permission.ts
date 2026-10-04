@@ -9,8 +9,9 @@
  *
  * 模式语义（PermissionMode）：
  *   ask    —— 非明确 safe 一律询问；
- *   auto   —— 只有"明确 safe 分类"自动放行（只读白名单命令 / 工作区内写入 /
- *             classifier 判 safe）；未知或危险命令一律转人工审批，绝不自动放行；
+ *   auto   —— 自动放行"非危险"操作：只读白名单命令 / 工作区内写入 / classifier 判 safe，
+ *             以及静态分类非 deny 且 classifier 非 unsafe 的 shell 命令（即审批卡 [t] 切换后的行为）；
+ *             deny list 危险命令仍拒绝，classifier 判 unsafe 仍转人工审批；
  *   deny   —— 拒绝一切需审批操作；
  *   bypass —— 显式的"全放行"模式（承接旧 auto 的放行语义，风险见 types.ts 注释）。
  *
@@ -23,6 +24,7 @@ import { Sandbox } from './sandbox.js';
 import { matchRules, toolNameKey, type PermissionSettings } from './permissionSettings.js';
 import { classifyShellCommand, segmentBinaries } from './commandClassifier.js';
 import { isProtectedWritePath, isSecretReadPath, protectedReason } from './protectedPaths.js';
+import { renderApprovalCard } from './terminal.js';
 
 export interface PermissionDecision {
   allow: boolean;
@@ -46,6 +48,8 @@ export interface PermissionGateOptions {
   ) => Promise<'safe' | 'unsafe' | 'skip'>;
   /** settings.json 多来源规则（G0 闸门）。 */
   settings?: PermissionSettings;
+  /** 额外只读根（EXTRA_READ_ROOTS）：只读命令目标可位于这些目录内（工作区外读放行）。 */
+  extraReadRoots?: string[];
 }
 
 const READ_ONLY_TOOLS = new Set([
@@ -118,8 +122,12 @@ export class PermissionGate {
   private askChoiceFn?: (question: string) => Promise<string>;
   private classifier?: PermissionGateOptions['classifier'];
   private settings?: PermissionSettings;
+  /** 额外只读根（只读命令越界判定用）。 */
+  private extraReadRoots: string[] = [];
   /** 本次任务批量授权的命令名（"允许本次任务中的类似命令"）。 */
   private sessionAllowedBinaries = new Set<string>();
+  /** 本次任务批量授权的文件工具（回答 a 后，同类文件操作不再询问）。 */
+  private sessionAllowedWriteTools = new Set<string>();
   /** 本任务的审批次数（提示里展示，便于用户感知并选择批量授权）。 */
   private askCount = 0;
 
@@ -129,11 +137,13 @@ export class PermissionGate {
     this.askChoiceFn = opts.askChoice;
     this.classifier = opts.classifier;
     this.settings = opts.settings;
+    this.extraReadRoots = opts.extraReadRoots ?? [];
   }
 
   /** 清空任务级批量授权（agent 每次 run 开始时调用，授权仅对本任务有效）。 */
   clearSessionApprovals(): void {
     this.sessionAllowedBinaries.clear();
+    this.sessionAllowedWriteTools.clear();
     this.askCount = 0;
   }
 
@@ -219,7 +229,7 @@ export class PermissionGate {
         return this.approve(`${toolName}: ${cmd.slice(0, 200)}`, 'classifier: unsafe', true);
       }
       /* 静态完整命令分类：管道/链接/重定向/子 shell/敏感文件全部参与判断 */
-      const cls = classifyShellCommand(cmd, ctx.workdir);
+      const cls = classifyShellCommand(cmd, ctx.workdir, this.extraReadRoots);
       if (cls.verdict === 'deny') return { allow: false, reason: cls.reason };
       if (cls.verdict === 'safe') return { allow: true, reason: 'classifier: safe read command' };
       /* 批量授权：命令所有段首命令都已被本任务授权 → 放行（不再重复询问同类命令） */
@@ -227,6 +237,10 @@ export class PermissionGate {
       if (bins.length > 0 && bins.every((b) => this.sessionAllowedBinaries.has(b))) {
         return { allow: true, reason: 'session batch approval (similar commands)' };
       }
+      /* auto：非只读但非危险的命令直接放行（与写工具分支的 auto 语义一致）。
+         必须放在 classifier unsafe(forceAsk)/deny/safe/批量 之后：
+         危险命令仍被 deny、classifier unsafe 仍转人工，只有"已知非危险"才静默。 */
+      if (this.mode === 'auto') return { allow: true, reason: 'auto mode: shell (non-dangerous command)' };
       /* 非只读/无法静态验证：人工审批，提示含风险等级 + 批量授权选项 */
       return this.approveShell(toolName, cmd, cls.reason || 'non-read-only command');
     }
@@ -240,11 +254,15 @@ export class PermissionGate {
           return this.approve(`${toolName} ${target}`, 'classifier: unsafe', true);
         }
         if (this.mode === 'deny') return { allow: false, reason: 'deny mode: in-workspace write' };
-        if (this.mode === 'ask') return this.approve(`${toolName} ${target}`, 'in-workspace write');
+        /* 本任务同类文件操作已批量授权（回答过 a）→ 不再询问 */
+        if (this.sessionAllowedWriteTools.has(toolName)) {
+          return { allow: true, reason: 'session batch approval (similar file ops)' };
+        }
+        if (this.mode === 'ask') return this.approveWrite(toolName, target, 'in-workspace write', true);
         /* auto / bypass：工作区内写入属于明确 safe 分类 */
         return { allow: true, reason: 'in-workspace write (auto)' };
       }
-      return this.approve(`${toolName} ${target}`, 'outside workspace', true);
+      return this.approveWrite(toolName, target, 'outside workspace', false);
     }
 
     /* 未知工具默认 deny：仅显式注册（并在上述各集合中明确归类）或显式 allowlist 的工具可通过 */
@@ -263,20 +281,65 @@ export class PermissionGate {
 
   /**
    * shell 命令审批：提示含风险原因 + 本任务审批次数 + 批量授权选项。
-   * 答复 y=本次允许；a=允许本任务中的同类命令（按段首命令名）；其余=拒绝。
+   * 答复 y=本次允许；a=允许本任务中的同类命令（按段首命令名）；t=允许并切换本会话到 auto；其余=拒绝。
    */
   private async approveShell(toolName: string, cmd: string, why: string): Promise<PermissionDecision> {
     if (this.mode === 'deny') return { allow: false, reason: `deny mode: ${why}` };
     if (this.mode === 'bypass') return { allow: true, reason: `bypass mode: ${why}` };
     this.askCount += 1;
     const bins = segmentBinaries(cmd);
-    const batchOption = bins.length > 0 ? ` a=允许本任务同类命令(${bins.join('/')})` : '';
-    const question = `Allow? ${toolName}: ${cmd.slice(0, 200)}\n  [风险: ${why} | 本任务第 ${this.askCount} 次审批 | y=本次允许${batchOption} n=拒绝]`;
+    const question = renderApprovalCard({
+      risk: why,
+      request: `${toolName}: ${cmd.slice(0, 200)}`,
+      askCount: this.askCount,
+      batch: bins.length > 0 ? bins.join('/') : undefined,
+    });
     if (this.askChoiceFn) {
       const answer = (await this.askChoiceFn(question)).trim().toLowerCase();
+      if (answer.startsWith('t')) {
+        this.setMode('auto');
+        return { allow: true, reason: 'user approved + switched to auto mode', asked: true };
+      }
       if (answer.startsWith('a')) {
         for (const b of bins) this.sessionAllowedBinaries.add(b);
         return { allow: true, reason: 'user batch-approved (similar commands this task)', asked: true };
+      }
+      if (answer.startsWith('y')) return { allow: true, reason: 'user approved', asked: true };
+      return { allow: false, reason: 'user denied', asked: true };
+    }
+    const ok = await this.askFn(question);
+    return { allow: ok, reason: ok ? 'user approved' : 'user denied', asked: true };
+  }
+
+  /**
+   * 文件工具审批（write_file/edit_file/delete_file/apply_patch）：
+   * 提示含风险原因 + 本任务审批次数（工作区内时含同类批量授权 + 切换 auto）。
+   * 答复 y=本次允许；a=允许本任务中的同类文件操作；t=允许并切换本会话到 auto；其余=拒绝。
+   */
+  private async approveWrite(
+    toolName: string,
+    target: string,
+    why: string,
+    batchable: boolean,
+  ): Promise<PermissionDecision> {
+    if (this.mode === 'deny') return { allow: false, reason: `deny mode: ${why}` };
+    if (this.mode === 'bypass') return { allow: true, reason: `bypass mode: ${why}` };
+    this.askCount += 1;
+    const question = renderApprovalCard({
+      risk: why,
+      request: `${toolName} ${target}`,
+      askCount: this.askCount,
+      batch: batchable ? toolName : undefined,
+    });
+    if (this.askChoiceFn) {
+      const answer = (await this.askChoiceFn(question)).trim().toLowerCase();
+      if (answer.startsWith('t')) {
+        this.setMode('auto');
+        return { allow: true, reason: 'user approved + switched to auto mode', asked: true };
+      }
+      if (answer.startsWith('a') && batchable) {
+        this.sessionAllowedWriteTools.add(toolName);
+        return { allow: true, reason: 'user batch-approved (similar file ops this task)', asked: true };
       }
       if (answer.startsWith('y')) return { allow: true, reason: 'user approved', asked: true };
       return { allow: false, reason: 'user denied', asked: true };

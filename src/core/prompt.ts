@@ -16,6 +16,8 @@ export interface PromptSections {
   memory?: string;
   todos?: TodoItem[];
   extra?: string[];
+  /** 已配置的环境变量名（仅名字，不注入值）：引导模型使用配置而不是探测默认端口。 */
+  envVars?: string[];
 }
 
 export function assembleSystemPrompt(s: PromptSections): string {
@@ -24,8 +26,24 @@ export function assembleSystemPrompt(s: PromptSections): string {
   if (s.memory) parts.push(s.memory);
   const todos = renderTodos(s.todos ?? []);
   if (todos) parts.push(todos);
+  if (s.envVars?.length) parts.push(renderEnvVars(s.envVars));
   if (s.extra?.length) parts.push(...s.extra);
   return parts.join('\n\n');
+}
+
+/**
+ * 环境变量清单（仅注入名字，绝不注入值）：
+ * 让模型知道连接串已通过环境配置，直接用变量读取，而不是硬编码或盲猜默认端口。
+ */
+export function renderEnvVars(names: string[]): string {
+  return [
+    '## Environment variables (names only; values are secrets)',
+    ...names.map((n) => `- ${n}`),
+    'Read values from the environment instead of hardcoding (PowerShell: $env:NAME; cmd: %NAME%).',
+    'Never print secret values.',
+    'When the above variables are configured, do NOT use glob / list_files / node -e readdirSync for broad filesystem scanning to "find" config files or connection strings — read the variable directly.',
+    'Do not probe default ports (e.g. 5432/6379/8000). Use the configured variable above or ask the user.',
+  ].join('\n');
 }
 
 export function renderTodos(todos: TodoItem[]): string {

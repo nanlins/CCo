@@ -9,9 +9,12 @@ env:
   IMAGE_NAME: claudecode-anvil
 
 jobs:
-  # ---------- CI: 测试 + 类型检查 + 构建 ----------
+  # ---------- CI: 测试 + 类型检查 + 构建（Linux / Windows 矩阵） ----------
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +38,54 @@ jobs:
       - name: 单元测试
         run: npm test
 
+      - name: 测试覆盖率
+        run: node --import tsx --test --experimental-test-coverage tests/*.test.ts
+
       - name: 构建
         run: npm run build
+
+  # ---------- 依赖审计 ----------
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 依赖审计
+        run: npm audit --audit-level=high
+
+  # ---------- 打包 smoke：真实 npm pack → 隔离安装 → 全局命令可启动 ----------
+  pack:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装依赖
+        run: npm ci
+      - name: 打包 smoke（npm pack + 隔离安装 + 全局命令启动）
+        run: |
+          npm pack
+          TGZ=$(ls handrolled-claude-code-*.tgz | head -1)
+          mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
+          npm init -y >/dev/null 2>&1
+          npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null 2>&1
+          # 发布包必须带编译产物与全局入口
+          test -f node_modules/handrolled-claude-code/dist/main.js
+          test -f node_modules/handrolled-claude-code/bin/anvil.js
+          test -f node_modules/handrolled-claude-code/LICENSE
+          node --check node_modules/handrolled-claude-code/dist/main.js
+          # 全局命令可启动（无 TTY + EOF 应立即退出；124=已启动未退出也视为通过）
+          set +e
+          timeout 30 node node_modules/.bin/anvil < /dev/null >/dev/null 2>&1
+          code=$?
+          set -e
+          echo "anvil exit=${code}（124=启动后未退出，视为通过）"
+          test "$code" != "1"
+          echo "pack smoke OK"
 
   # ---------- CD: 构建 Docker 镜像并推送 ----------
   docker:
@@ -65,3 +114,4 @@ jobs:
 
 # 修改记录：
 #   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫，杜绝 Dockerfile 缺失时流水线空转失败（2026-08-07~09-21 曾发生）
+#   2026-10-03 test 增加 Linux/Windows 矩阵 + 测试覆盖率；新增 audit（npm audit）与 pack（npm pack smoke）作业

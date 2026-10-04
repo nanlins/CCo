@@ -3,46 +3,11 @@
  * 深色青蓝色主题（Claude Code 风格）。
  */
 import stringWidth from 'string-width';
+import { C } from './terminalTheme.js';
 
-/* ---------- ANSI 颜色 ---------- */
+export { C, brandChip, fmtDuration, wrapForGutter, fitToWidth, visibleLength } from './terminalTheme.js';
 
-export const C = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  italic: '\x1b[3m',
-  underline: '\x1b[4m',
-  // 前景色
-  black: '\x1b[30m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  // 青蓝色主题
-  teal: '\x1b[38;5;44m', // 青蓝
-  aqua: '\x1b[38;5;80m', // 亮青
-  cyanDim: '\x1b[38;5;37m', // 暗青
-  gray: '\x1b[38;5;245m',
-  darkGray: '\x1b[38;5;240m',
-  orange: '\x1b[38;5;215m',
-  pink: '\x1b[38;5;211m',
-  purple: '\x1b[38;5;141m',
-  // 背景
-  bgDark: '\x1b[48;5;235m', // 深色背景
-  bgTeal: '\x1b[48;5;44m',
-  bgGray: '\x1b[48;5;240m',
-  bgRed: '\x1b[48;5;124m',
-  // 控制
-  clear: '\x1b[2J\x1b[H',
-  clearLine: '\x1b[2K',
-  savePos: '\x1b[s',
-  restorePos: '\x1b[u',
-  showCursor: '\x1b[?25h',
-  hideCursor: '\x1b[?25l',
-};
+/* ---------- ANSI 颜色（统一 token，见 terminalTheme.ts） ---------- */
 
 /** 上移 n 行。 */
 export function up(n: number): string {
@@ -61,11 +26,11 @@ export function stripAnsi(text: string): string {
 /* ---------- 赛博机器人吉祥物（颜色差 + 反差感 + 科技感） ---------- */
 
 /* 背景：深灰黑；主体：亮青；眼：品红；点缀/天线/核心：亮黄。强对比。 */
-const BG = '\x1b[48;5;233m';
-const CYAN = '\x1b[38;5;51m';
-const CYAN_HI = '\x1b[38;5;87m';
-const MAGENTA = '\x1b[38;5;201m';
-const YELLOW = '\x1b[38;5;226m';
+const BG = C.bgDark;
+const CYAN = C.cyan;
+const CYAN_HI = C.aqua;
+const MAGENTA = C.magenta;
+const YELLOW = C.yellow;
 
 /* 字符→颜色 映射（未列出的非空格字符用亮青）。 */
 const PALETTE: Record<string, string> = {
@@ -485,12 +450,82 @@ export interface StatusPanelData {
   maxTurns: number;
   tool: string;
   elapsedMs: number;
+  /** 本 run 累计输入 token（非当前上下文大小）。 */
   inputTokens: number;
+  /** 本 run 累计输出 token。 */
   outputTokens: number;
+  /** 当前消息数组的上下文估算 token（compact 估算；未提供则不显示）。 */
+  contextTokens?: number;
   /** 已排队的输入条数。 */
   queueCount: number;
   /** 是否已请求取消（Ctrl+C）。 */
   cancelled?: boolean;
+}
+
+/** 权限审批卡片数据。 */
+export interface ApprovalCardData {
+  risk: string;
+  request: string;
+  askCount: number;
+  /** 可批量授权的同类操作（如 shell 的 "git/npm" 或文件工具的 "write_file"），空则不显示批量选项。 */
+  batch?: string;
+}
+
+/**
+ * 渲染权限审批为结构化卡片（纯函数，无 ANSI）。
+ * 含：风险原因、请求内容、本任务审批次数、单次允许 [y] / 同类批量允许 [a] / 切换 auto [t] / 拒绝 [n]。
+ */
+/** 按显示宽度把字符串切成多行（中文/emoji 不越界）。 */
+function chunkByWidth(s: string, maxW: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let w = 0;
+  for (const ch of Array.from(s)) {
+    const cw = stringWidth(ch);
+    if (w + cw > maxW && cur) {
+      out.push(cur);
+      cur = '';
+      w = 0;
+    }
+    cur += ch;
+    w += cw;
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [''];
+}
+
+export function renderApprovalCard(d: ApprovalCardData): string {
+  const width = 64;
+  const inner = width - 2;
+  const cellW = inner - 1; // 「│ 」前缀 + 内容，右侧 1 列留白
+  const fill = (s: string): string => {
+    const w = stringWidth(s);
+    return '│ ' + s + ' '.repeat(Math.max(0, inner - w - 1)) + '│';
+  };
+  const rows: string[] = [];
+  const head = '┌─ 权限审批 ';
+  rows.push(head + '─'.repeat(Math.max(0, width - stringWidth(head) - 1)) + '┐');
+  /* risk / request 任意长度：按显示宽度换行，绝不撑破边框 */
+  for (const line of chunkByWidth(`风险: ${d.risk}`, cellW)) rows.push(fill(line));
+  for (const line of chunkByWidth(`请求: ${d.request}`, cellW)) rows.push(fill(line));
+  rows.push(fill(`本任务第 ${d.askCount} 次审批`));
+  rows.push('│' + ' '.repeat(inner) + '│');
+  rows.push(fill('[y] 本次允许'));
+  if (d.batch) rows.push(fill(`[a] 允许本任务同类操作（${d.batch}）`));
+  rows.push(fill('[t] 允许并切换本会话到 auto 模式'));
+  rows.push(fill('[n] 拒绝'));
+  rows.push('└' + '─'.repeat(inner) + '┘');
+  return rows.join('\n');
+}
+
+/**
+ * 状态面板耗时计算（纯函数）：
+ * 审批等待期间（pausedAt > 0）冻结在暂停时刻，且此前累计的暂停时长不计入。
+ */
+export function computeElapsedMs(now: number, start: number, pausedAt = 0, pausedTotal = 0): number {
+  if (start <= 0) return 0;
+  const base = pausedAt > 0 ? pausedAt : now;
+  return Math.max(0, base - start - pausedTotal);
 }
 
 /**
@@ -508,9 +543,12 @@ export function renderStatusPanel(status: StatusPanelData, width: number): strin
     `轮次 ${status.turn}/${status.maxTurns}`,
     `工具 ${status.tool || '…'}`,
     `耗时 ${elapsed}s`,
-    `输出 ${status.outputTokens} tok`,
-    `输入 ${status.inputTokens} tok`,
+    `累计输入 ${status.inputTokens} tok`,
+    `累计输出 ${status.outputTokens} tok`,
   ];
+  if (status.contextTokens !== undefined) {
+    fields.push(`本轮上下文 约 ${Math.round(status.contextTokens / 1000)}k tok（估算）`);
+  }
   if (status.queueCount > 0) fields.push(`排队 ${status.queueCount} 条`);
   fields.push(status.cancelled ? '已请求取消' : 'Ctrl+C 取消');
 

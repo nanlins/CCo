@@ -27,7 +27,31 @@ test('UserPromptSubmit hook can modify input', async () => {
   h.cleanup();
 });
 
-test('trigger returns first non-undefined result', async () => {
+test('trigger 全部执行：第一个空、第二个 block → 合并为 block', async () => {
+  const reg = new HookRegistry();
+  let secondRan = false;
+  reg.register('Stop', () => undefined);
+  reg.register('Stop', () => {
+    secondRan = true;
+    return { block: true, blockingError: 'not done' };
+  });
+  const result = await reg.trigger('Stop', { messagesCount: 1 });
+  assert.equal(secondRan, true, '第二个 hook 必须被执行');
+  assert.equal(result?.block, true);
+  assert.equal(result?.blockingError, 'not done');
+});
+
+test('trigger 合并：permissionBehavior 取最严格、消息拼接、updatedInput 浅合并', async () => {
+  const reg = new HookRegistry();
+  reg.register('PreToolUse', () => ({ permissionBehavior: 'allow', updatedInput: { a: 1 }, message: 'm1' }));
+  reg.register('PreToolUse', () => ({ permissionBehavior: 'deny', updatedInput: { b: 2 }, message: 'm2' }));
+  const r = await reg.trigger('PreToolUse', {});
+  assert.equal(r?.permissionBehavior, 'deny');
+  assert.deepEqual(r?.updatedInput, { a: 1, b: 2 });
+  assert.match(r?.message ?? '', /m1[\s\S]*m2/);
+});
+
+test('单 hook 行为不变（返回原结果）', async () => {
   const reg = new HookRegistry();
   reg.register('Stop', () => undefined);
   reg.register('Stop', () => ({ forceContinue: true }));

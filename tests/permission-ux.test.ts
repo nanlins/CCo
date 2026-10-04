@@ -42,7 +42,7 @@ test('stderr/NUL 重定向豁免：不触发危险写入询问', async () => {
   }
 });
 
-test('真实写入重定向仍然受控（> 到工作区外 deny，工作区内 ask）', async () => {
+test('真实写入重定向仍然受控（> 到工作区外 deny，工作区内 ask/auto 按模式）', async () => {
   const h = makeHarness();
   try {
     const gate = new PermissionGate({ mode: 'auto', ask: async () => false });
@@ -50,15 +50,27 @@ test('真实写入重定向仍然受控（> 到工作区外 deny，工作区内 
     assert.equal(dOut.allow, false, '越出工作区的重定向必须 deny');
     let asked = 0;
     const gate2 = new PermissionGate({
-      mode: 'auto',
+      mode: 'ask',
       ask: async () => {
         asked += 1;
         return false;
       },
     });
     const dIn = await gate2.check('bash', { command: 'echo x > inside.txt' }, { workdir: h.workdir });
-    assert.equal(asked, 1, '工作区内写入重定向应询问（这是真实写入，不豁免）');
+    assert.equal(asked, 1, 'ask 模式下工作区内写入重定向应询问（这是真实写入，不豁免）');
     assert.equal(dIn.allow, false);
+    /* auto：工作区内写入与 write_file 同为"明确 safe"，自动放行（P1-1 语义） */
+    let askedAuto = 0;
+    const gate3 = new PermissionGate({
+      mode: 'auto',
+      ask: async () => {
+        askedAuto += 1;
+        return false;
+      },
+    });
+    const dInAuto = await gate3.check('bash', { command: 'echo x > inside.txt' }, { workdir: h.workdir });
+    assert.equal(dInAuto.allow, true);
+    assert.equal(askedAuto, 0);
   } finally {
     h.cleanup();
   }
@@ -70,7 +82,7 @@ test('批量授权：回答 a 后同类命令本任务内不再询问', async ()
     const answers: string[] = ['a']; // 第一次回答 a（允许本任务同类命令）
     let choiceCalls = 0;
     const gate = new PermissionGate({
-      mode: 'auto',
+      mode: 'ask',
       ask: async () => false,
       askChoice: async () => {
         choiceCalls += 1;
@@ -106,7 +118,7 @@ test('批量授权不适用于危险路径：deny list / 受保护路径优先',
   const h = makeHarness();
   try {
     const gate = new PermissionGate({
-      mode: 'auto',
+      mode: 'ask',
       ask: async () => true,
       askChoice: async () => 'a',
     });

@@ -114,19 +114,19 @@ test('gate: 重定向逃逸命令 bash/bg_run 都拒绝（auto 模式也不放�
   }
 });
 
-test('gate: `cd ws && node write.js` 必须询问（auto 模式不得零询问放行）', async () => {
+test('gate: `cd ws && node write.js` 在 ask 模式下必须询问（不得零询问放行）', async () => {
   const h = makeHarness();
   try {
     let asked = 0;
     const gate = new PermissionGate({
-      mode: 'auto',
+      mode: 'ask',
       ask: async () => {
         asked += 1;
         return false;
       },
     });
     const d = await gate.check('bash', { command: 'cd workspace && node write.js' }, { workdir: h.workdir });
-    assert.equal(asked, 1, '非只读命令必须询问');
+    assert.equal(asked, 1, '非只读命令在 ask 模式必须询问');
     assert.equal(d.allow, false, 'ask 返回 false → 拒绝');
     /* bg_run 相同命令同样询问 */
     asked = 0;

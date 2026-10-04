@@ -27,27 +27,15 @@ test('classifier: safe read command allowed in ask mode without asking', async (
   assert.equal(asked, 0);
 });
 
-test('auto 模式：危险/未知命令必须人工审批，不再自动放行（P0 修复）', async () => {
+test('auto 模式：非危险命令自动放行，危险命令仍拦截（P1-1）', async () => {
   const h = makeHarness();
-  let asked = 0;
-  const askGate = new PermissionGate({
-    mode: 'ask',
-    ask: async () => {
-      asked += 1;
-      return true;
-    },
-  });
-  const d = await askGate.check('bash', { command: 'del temp.txt' }, { workdir: h.workdir });
-  assert.equal(d.allow, true);
-  assert.equal(asked, 1);
 
-  /* auto：危险命令转人工（ask 返回 false → 拒绝） */
-  const autoGate = new PermissionGate({ mode: 'auto', ask: async () => false });
-  const d2 = await autoGate.check('bash', { command: 'del temp.txt' }, { workdir: h.workdir });
-  assert.equal(d2.allow, false, 'auto 模式不得自动放行危险命令');
-  assert.equal(d2.reason, 'user denied');
+  /* auto：明确危险（deny list）永久拒绝，与是否询问无关 */
+  const autoDeny = new PermissionGate({ mode: 'auto', ask: async () => true });
+  const dBad = await autoDeny.check('bash', { command: 'del /s C:\\' }, { workdir: h.workdir });
+  assert.equal(dBad.allow, false, 'auto 模式不得放行 deny list 命令');
 
-  /* auto：未知命令同样转人工 */
+  /* auto：非危险命令（未知/写重定向）直接放行，不再逐条询问 —— [t]→auto 的核心语义 */
   let askedAuto = 0;
   const autoGate2 = new PermissionGate({
     mode: 'auto',
@@ -58,7 +46,34 @@ test('auto 模式：危险/未知命令必须人工审批，不再自动放行�
   });
   const d3 = await autoGate2.check('bash', { command: 'node some-script.js' }, { workdir: h.workdir });
   assert.equal(d3.allow, true);
-  assert.equal(askedAuto, 1, 'auto 模式下未知命令必须询问');
+  assert.equal(askedAuto, 0, 'auto 模式下非危险命令不应询问');
+
+  /* auto：classifier 判 unsafe 仍转人工 */
+  let askedUnsafe = 0;
+  const autoUnsafe = new PermissionGate({
+    mode: 'auto',
+    ask: async () => {
+      askedUnsafe += 1;
+      return false;
+    },
+    classifier: async () => 'unsafe',
+  });
+  const dUnsafe = await autoUnsafe.check('bash', { command: 'node some-script.js' }, { workdir: h.workdir });
+  assert.equal(dUnsafe.allow, false);
+  assert.equal(askedUnsafe, 1, 'classifier unsafe 必须转人工');
+
+  /* ask 模式：同类命令仍逐条询问 */
+  let asked = 0;
+  const askGate = new PermissionGate({
+    mode: 'ask',
+    ask: async () => {
+      asked += 1;
+      return true;
+    },
+  });
+  const d = await askGate.check('bash', { command: 'node some-script.js' }, { workdir: h.workdir });
+  assert.equal(d.allow, true);
+  assert.equal(asked, 1, 'ask 模式必须询问');
 
   /* auto：明确 safe 的只读命令仍然自动放行（不询问） */
   let askedSafe = 0;
@@ -82,7 +97,7 @@ test('auto 模式：危险/未知命令必须人工审批，不再自动放行�
       return false;
     },
   });
-  const d5 = await bypassGate.check('bash', { command: 'del temp.txt' }, { workdir: h.workdir });
+  const d5 = await bypassGate.check('bash', { command: 'node some-script.js' }, { workdir: h.workdir });
   assert.equal(d5.allow, true);
   assert.equal(askedBypass, 0);
   assert.ok(d5.reason.includes('bypass'));
@@ -128,7 +143,7 @@ test('bg_run: 危险命令被 deny list 拦截（与 bash 相同）', async () =
   h.cleanup();
 });
 
-test('bg_run: auto 模式下未知命令转人工审批', async () => {
+test('bg_run: auto 模式下非危险命令自动放行（与 bash 一致）', async () => {
   const h = makeHarness();
   let asked = 0;
   const gate = new PermissionGate({
@@ -139,8 +154,24 @@ test('bg_run: auto 模式下未知命令转人工审批', async () => {
     },
   });
   const d = await gate.check('bg_run', { command: 'python train.py' }, { workdir: h.workdir });
+  assert.equal(d.allow, true);
+  assert.equal(asked, 0, 'auto 下与 bash 一致：非危险命令不询问');
+  h.cleanup();
+});
+
+test('bg_run: ask 模式下未知命令转人工审批', async () => {
+  const h = makeHarness();
+  let asked = 0;
+  const gate = new PermissionGate({
+    mode: 'ask',
+    ask: async () => {
+      asked += 1;
+      return false;
+    },
+  });
+  const d = await gate.check('bg_run', { command: 'python train.py' }, { workdir: h.workdir });
   assert.equal(d.allow, false);
-  assert.equal(asked, 1, 'bg_run 未知命令必须询问');
+  assert.equal(asked, 1, 'ask 模式下 bg_run 未知命令必须询问');
   h.cleanup();
 });
 
