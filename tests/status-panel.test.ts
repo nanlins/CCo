@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderStatusPanel, displayWidth, truncateLine, type StatusPanelData } from '../src/core/terminal.js';
+import { makeHarness } from './helpers.js';
 
 const SAMPLE: StatusPanelData = {
   running: true,
@@ -70,4 +71,30 @@ test('renderStatusPanel: 队列计数与取消状态反映到面板', () => {
   const lines = renderStatusPanel({ ...SAMPLE, queueCount: 3, cancelled: true }, 80).join('\n');
   assert.ok(lines.includes('排队 3 条'));
   assert.ok(lines.includes('已请求取消'));
+});
+
+test('P2-4: 面板区分"累计输入"与"本轮上下文估算"（口径不误读）', () => {
+  const lines = renderStatusPanel({ ...SAMPLE, inputTokens: 193_317, contextTokens: 16_000 }, 120).join('\n');
+  assert.ok(lines.includes('累计输入 193317 tok'), '累计输入必须明确标注');
+  assert.ok(lines.includes('本轮上下文 约 16k tok'), '应显示本轮上下文估算');
+  /* 未提供 contextTokens 时不显示该字段（兼容旧调用方） */
+  const legacy = renderStatusPanel(SAMPLE, 120).join('\n');
+  assert.ok(!legacy.includes('本轮上下文'));
+});
+
+test('P2-4: agent [stats] 行标注累计口径并附本轮上下文估算', async () => {
+  const h = makeHarness({ script: [{ blocks: [{ type: 'text', text: 'ok' }] }] });
+  try {
+    const events: string[] = [];
+    h.agent.setOnEvent((e) => {
+      if (e.type === 'system') events.push(e.message);
+    });
+    await h.agent.run('hi');
+    const stats = events.find((m) => m.startsWith('[stats]'));
+    assert.ok(stats, `应产生 [stats] 事件: ${JSON.stringify(events)}`);
+    assert.match(stats!, /累计 tokens in\/out=/);
+    assert.match(stats!, /本轮上下文 约 \d+k tok/);
+  } finally {
+    h.cleanup();
+  }
 });

@@ -211,6 +211,55 @@ export async function* sseLines(body: AsyncIterable<Uint8Array>): AsyncGenerator
   if (tail.startsWith('data:')) yield tail.slice(5).trim();
 }
 
+/* ---------- 结构化输出：thinking 模型兼容 ---------- */
+
+/**
+ * 是否为"思考型"模型（DeepSeek thinking / reasoner / o1 等）。
+ * 这类模型拒绝强制 tool_choice（"Thinking mode does not support this tool_choice"），
+ * 需改用文本 JSON 兜底，与 memory.ts 的解析路径一致。
+ */
+export function isThinkingModel(model: string): boolean {
+  return /(^|[-_/])(flash|reasoner|think(?:ing)?|o1|o3|r1)([-_/]|$)/i.test(model) || /deepseek/i.test(model);
+}
+
+/** 文本 JSON 模式的系统提示：明确禁止工具调用，只输出符合 schema 的 JSON。 */
+function textJsonInstruction(structured: NonNullable<LlmCallParams['structured']>): string {
+  return [
+    '【结构化输出】不要调用任何工具。只输出一个 JSON 对象（不要 markdown 代码块、不要任何解释文字），且必须符合以下 JSON Schema：',
+    JSON.stringify(structured.schema),
+  ].join('\n');
+}
+
+/** 从文本中提取 JSON 对象：容忍 markdown 围栏与前后解释文字。 */
+export function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : text;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start < 0 || end <= start) return undefined;
+  try {
+    const parsed = JSON.parse(candidate.slice(start, end + 1)) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 服务端是否明确拒绝 tool_choice（未预判为 thinking 模型时的自动降级信号）。 */
+export function isToolChoiceUnsupported(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /tool_choice/i.test(msg) || /thinking mode/i.test(msg);
+}
+
+function collectText(blocks: AssistantBlock[]): string {
+  return blocks
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+}
+
 /* ---------- 客户端 ---------- */
 
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -222,41 +271,65 @@ export class OpenAiLlm implements LlmClient {
   async complete(params: LlmCallParams): Promise<LlmResult> {
     const model = params.model ?? this.cfg.model;
     const isStructured = params.structured !== undefined;
+    /* DeepSeek thinking 模式拒绝强制 tool_choice：预判为 thinking 模型时直接走文本 JSON。 */
+    let structuredAsText = isStructured && isThinkingModel(model);
 
-    const body: Record<string, unknown> = {
-      model,
-      stream: true,
-      stream_options: { include_usage: true },
-      max_tokens: params.maxTokens,
-      messages: toOpenAiMessages(params.system, params.messages),
-    };
-    if (isStructured) {
-      body.tools = [
-        {
-          type: 'function',
-          function: {
-            name: params.structured!.name,
-            description: params.structured!.description,
-            parameters: params.structured!.schema,
+    const buildBody = (textJson: boolean): Record<string, unknown> => {
+      const system =
+        textJson && params.structured
+          ? [params.system, textJsonInstruction(params.structured)].filter(Boolean).join('\n\n')
+          : params.system;
+      const b: Record<string, unknown> = {
+        model,
+        stream: true,
+        stream_options: { include_usage: true },
+        max_tokens: params.maxTokens,
+        messages: toOpenAiMessages(system, params.messages),
+      };
+      if (isStructured && !textJson) {
+        b.tools = [
+          {
+            type: 'function',
+            function: {
+              name: params.structured!.name,
+              description: params.structured!.description,
+              parameters: params.structured!.schema,
+            },
           },
-        },
-      ];
-      body.tool_choice = { type: 'function', function: { name: params.structured!.name } };
-    } else if (params.tools.length > 0) {
-      body.tools = toOpenAiTools(params.tools);
-      body.tool_choice = 'auto';
-    }
-    if (this.cfg.temperature !== undefined) body.temperature = this.cfg.temperature;
-    if (this.cfg.topP !== undefined) body.top_p = this.cfg.topP;
-    if (this.cfg.stopSequences) body.stop = this.cfg.stopSequences;
+        ];
+        b.tool_choice = { type: 'function', function: { name: params.structured!.name } };
+      } else if (!isStructured && params.tools.length > 0) {
+        b.tools = toOpenAiTools(params.tools);
+        b.tool_choice = 'auto';
+      }
+      if (this.cfg.temperature !== undefined) b.temperature = this.cfg.temperature;
+      if (this.cfg.topP !== undefined) b.top_p = this.cfg.topP;
+      if (this.cfg.stopSequences) b.stop = this.cfg.stopSequences;
+      return b;
+    };
 
-    const acc = await this.streamRequest(body, params.onEvent, params.abortSignal);
+    let acc: StreamAccumulator;
+    try {
+      acc = await this.streamRequest(buildBody(structuredAsText), params.onEvent, params.abortSignal);
+    } catch (err) {
+      /* 未预判到但服务端明确拒绝 tool_choice：降级文本 JSON 再试一次。 */
+      if (isStructured && !structuredAsText && isToolChoiceUnsupported(err)) {
+        structuredAsText = true;
+        acc = await this.streamRequest(buildBody(true), params.onEvent, params.abortSignal);
+      } else {
+        throw err;
+      }
+    }
     const blocks = acc.blocks();
 
     let structured: Record<string, unknown> | undefined;
     if (isStructured) {
-      const use = blocks.find((b) => b.type === 'tool_use');
-      if (use?.type === 'tool_use') structured = use.input as Record<string, unknown>;
+      if (structuredAsText) {
+        structured = parseJsonObject(collectText(blocks));
+      } else {
+        const use = blocks.find((b) => b.type === 'tool_use');
+        if (use?.type === 'tool_use') structured = use.input as Record<string, unknown>;
+      }
     }
 
     return {

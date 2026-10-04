@@ -27,9 +27,15 @@ import {
   paginate,
   stripAnsi,
   renderStatusPanel,
+  brandChip,
+  fmtDuration,
+  fitToWidth,
+  wrapForGutter,
+  computeElapsedMs,
   type StatusPanelData,
 } from './core/terminal.js';
 import { configGuide } from './core/configManager.js';
+import { countMessageTokens } from './core/compact.js';
 import { t } from './core/i18n.js';
 
 export interface ReplOptions {
@@ -38,7 +44,12 @@ export interface ReplOptions {
   streams?: boolean;
   /** 未配置 API key 时显示配置引导。 */
   needsConfig?: boolean;
-  onReady?: (askQuestion: (question: string) => Promise<string>) => void;
+  /** 已加载的项目指令文件路径（用于首屏准确提示，而非无条件宣传"创建 ANVIL.md"）。 */
+  projectInstructionFiles?: string[];
+  onReady?: (io: {
+    askQuestion: (question: string) => Promise<string>;
+    askSecret: (question: string) => Promise<string>;
+  }) => void;
   onCommand?: (cmd: string, args: string[]) => Promise<string | void>;
   /** 注入输入/输出流（测试用；默认 process.stdin/stdout）。 */
   input?: NodeJS.ReadableStream & { isTTY?: boolean };
@@ -57,6 +68,7 @@ const DEFAULT_COMMANDS = [
   '/tools',
   '/config',
   '/compact',
+  '/goal',
   '/tasks',
   '/memory',
   '/team',
@@ -65,12 +77,15 @@ const DEFAULT_COMMANDS = [
   '/apikey',
   '/baseurl',
   '/protocol',
+  '/verify',
+  '/workflow',
   '/resume',
   '/retry',
   '/sessions',
   '/session-delete',
   '/export',
   '/plugins',
+  '/plugin-search',
   '/plugin-install',
   '/plugin-uninstall',
   '/usage',
@@ -84,6 +99,7 @@ const HELP = `命令：
   /tools     列出可用工具
   /config    显示配置摘要
   /compact   强制压缩对话
+  /goal      登记/查看完成验证器（/goal file|contains|command|clear）
   /tasks     显示任务看板
   /memory    显示记忆目录
   /team      显示队友
@@ -112,6 +128,14 @@ let outSink: (s: string) => void = (s) => process.stdout.write(s);
 function log(msg: string): void {
   logBuffer.push(msg);
   outSink(msg + '\n');
+}
+
+/** 正文/卡片/错误统一 gutter 输出：左留白 + 长行按终端宽度换行，禁止溢出。 */
+function logBody(text: string, gutter = 2): void {
+  const pad = ' '.repeat(gutter);
+  for (const line of wrapForGutter(text, gutter).split('\n')) {
+    log(pad + line);
+  }
 }
 
 export async function startRepl(opts: ReplOptions): Promise<void> {
@@ -158,17 +182,29 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   });
   for (const line of centered) log(line);
   log('');
-  log(C.teal + C.bold + '  小锤 Anvil' + C.reset + '  ' + C.dim + VERSION + C.reset);
+  log('  ' + brandChip(' 小锤 Anvil ') + '  ' + C.dim + VERSION + C.reset);
   log(
-    '  ' + C.dim + '模型: ' + C.reset + C.white + model + C.reset + (mode ? C.dim + ' | 模式: ' + C.reset + mode : ''),
+    '  ' +
+      C.dim +
+      '模型: ' +
+      C.reset +
+      C.white +
+      fitToWidth(model, mode ? ` 模式: ${mode}` : '') +
+      C.reset +
+      (mode ? C.dim + ' | 模式: ' + C.reset + mode : ''),
   );
-  log('  ' + C.dim + '工作区: ' + C.reset + C.gray + workdir + C.reset);
+  log('  ' + C.dim + '工作区: ' + C.reset + C.gray + fitToWidth(workdir, '') + C.reset);
   log('');
   log('  ' + C.dim + '入门:' + C.reset);
-  log('  ' + C.gray + '  1. ' + C.reset + C.cyan + '创建 ANVIL.md 文件来自定义交互行为' + C.reset);
-  log('  ' + C.gray + '  2. ' + C.reset + C.cyan + '输入 /help 获取更多信息' + C.reset);
-  log('  ' + C.gray + '  3. ' + C.reset + C.cyan + '可以提问编程问题、编辑代码或者运行命令' + C.reset);
-  log('  ' + C.gray + '  4. ' + C.reset + C.cyan + '描述尽量具体，以获得最佳输出结果' + C.reset);
+  const instrFiles = opts.projectInstructionFiles ?? [];
+  if (instrFiles.length > 0) {
+    log('  ' + C.green + '  ✓' + C.reset + ' 已加载项目指令: ' + C.cyan + instrFiles.join(', ') + C.reset);
+  } else {
+    log('  ' + C.gray + '  1. ' + C.reset + C.cyan + '创建 ANVIL.md / CLAUDE.md 来自定义交互行为' + C.reset);
+    log('  ' + C.gray + '  2. ' + C.reset + C.cyan + '输入 /help 获取更多信息' + C.reset);
+    log('  ' + C.gray + '  3. ' + C.reset + C.cyan + '可以提问编程问题、编辑代码或者运行命令' + C.reset);
+    log('  ' + C.gray + '  4. ' + C.reset + C.cyan + '描述尽量具体，以获得最佳输出结果' + C.reset);
+  }
 
   /* 未配置 API key：显示配置引导 */
   if (opts.needsConfig) {
@@ -193,6 +229,11 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   let statusMaxTurns = 0;
   let statusTool = '';
   let statusStart = 0;
+  /* 审批等待期间的计时冻结：pausedAt>0 表示正在暂停，pausedTotal 累计已暂停时长。 */
+  let statusPausedAt = 0;
+  let statusPausedTotal = 0;
+  /* 单次工具耗时（tool_use → tool_result 计时）。 */
+  let toolStart = 0;
   opts.agent.setOnEvent((e: AgentEvent) => {
     switch (e.type) {
       case 'text': {
@@ -215,12 +256,16 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
           textBuffer = '';
         }
         statusTool = e.name;
+        toolStart = Date.now();
         const args = JSON.stringify(e.args ?? {}).slice(0, 80);
         log('');
-        log('  ' + badge('TOOL') + ' ' + toolLabel(e.name) + C.dim + ' ' + args + C.reset);
+        log('  ' + badge('TOOL') + ' ' + toolLabel(fitToWidth(e.name, '')) + C.dim + ' ' + args + C.reset);
         break;
       }
       case 'tool_result': {
+        const dur = toolStart ? fmtDuration(Date.now() - toolStart) : '';
+        toolStart = 0;
+        log('  ' + C.dim + '  ✓ ' + e.name + (dur ? ` ${dur}` : '') + C.reset);
         break;
       }
       case 'diff': {
@@ -240,7 +285,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       }
       case 'system': {
         log('');
-        log('  ' + C.dim + '[' + e.message + ']' + C.reset);
+        logBody(C.dim + '[' + e.message + ']' + C.reset);
         break;
       }
       case 'compact': {
@@ -265,9 +310,11 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       turn: statusTurn,
       maxTurns: statusMaxTurns,
       tool: statusTool,
-      elapsedMs: statusStart > 0 ? Date.now() - statusStart : 0,
+      elapsedMs: computeElapsedMs(Date.now(), statusStart, statusPausedAt, statusPausedTotal),
       inputTokens: u.totalInput,
       outputTokens: u.totalOutput,
+      /* 当前消息数组的上下文估算（与 compact 同口径），区别于累计输入 */
+      contextTokens: countMessageTokens(opts.agent.session.messages),
       queueCount: inputQueue.length,
       cancelled: opts.agent.isCancelRequested(),
     };
@@ -323,6 +370,19 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     erasePanel();
   }
 
+  /* 审批等待：冻结计时并隐藏面板（避免卡片被心跳重绘覆盖/耗时虚涨）；答复后恢复重绘。 */
+  const pauseStatusClock = (): void => {
+    if (statusPausedAt === 0) statusPausedAt = Date.now();
+    erasePanel();
+  };
+  const resumeStatusClock = (): void => {
+    if (statusPausedAt > 0) {
+      statusPausedTotal += Date.now() - statusPausedAt;
+      statusPausedAt = 0;
+    }
+    if (busyActive) drawPanel();
+  };
+
   /* 接入输出函数 */
   writeContent = writeContentImpl;
 
@@ -352,11 +412,30 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     terminal: Boolean((input as { isTTY?: boolean }).isTTY),
   });
 
-  /* Ctrl+C：运行中 → 请求取消；空闲 → 提示，1.5s 内再来一次则退出 */
+  /* Ctrl+C：审批中 → 立即以"拒绝"结清当前审批（可取消点反馈）；
+     运行中 → 请求取消；空闲 → 提示，1.5s 内再来一次则退出 */
   let busy = false;
   let lastIdleSigint = 0;
   let exitRequested = false;
+  /* 是否正处于审批/密钥输入等待（可取消点）。 */
+  let awaitingApproval = false;
   rl.on('SIGINT', () => {
+    if (awaitingApproval) {
+      const s = sink as ((line: string) => void) | null;
+      awaitingApproval = false;
+      if (s) {
+        sink = null;
+        s('n'); // 视为拒绝，立即结清，避免一直等待
+      }
+      writeContent(C.yellow + '  ' + t('repl.cancel_requested') + '（当前审批已取消=拒绝）' + C.reset + '\n');
+      if (busyActive) {
+        sink = busySink;
+        sinkPrompt = '';
+      } else {
+        setPromptSync('❯ ');
+      }
+      return;
+    }
     if (busy) {
       opts.agent.requestCancel();
       refreshPanel();
@@ -545,18 +624,22 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   };
 
   /* 权限审批：写文件前弹窗（ask 模式时由 PermissionGate 调用 askFn） */
-  opts.onReady?.(async (question: string): Promise<string> => {
+  const askQuestion = async (question: string): Promise<string> => {
+    pauseStatusClock();
     log('');
     log('  ' + badge(t('repl.badge.permission'), C.yellow));
     for (const line of renderMarkdown(question)) log('  ' + line);
-    /* 接管 sink：下一行即审批答复（单泵串行，无竞争） */
+    /* 接管 sink：下一行即审批答复（单泵串行，无竞争）；标记为可取消点 */
+    awaitingApproval = true;
     const answer = await new Promise<string>((resolve) => {
       sink = (l) => {
+        awaitingApproval = false;
         sink = null;
         resolve(l);
       };
       setPromptSync('  ' + C.yellow + '❓ ' + C.reset);
     });
+    awaitingApproval = false;
     /* 答复后恢复：仍在 busy 则回到 busy sink，否则回空闲 */
     if (busyActive) {
       sink = busySink;
@@ -566,8 +649,50 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       setPromptSync('❯ ');
     }
     writeContent('  ' + C.dim + '→ ' + answer.trim() + C.reset + '\n');
+    resumeStatusClock();
     return answer.trim();
-  });
+  };
+
+  /* 密钥输入：屏蔽字符回显（终端模式下覆盖 readline 输出），密钥验证通过前不落盘。 */
+  const askSecret = async (question: string): Promise<string> => {
+    pauseStatusClock();
+    log('');
+    log('  ' + badge(t('repl.badge.permission'), C.yellow));
+    for (const line of renderMarkdown(question)) log('  ' + line);
+    const rlAny = rl as unknown as { _writeToOutput?: (s: string) => void };
+    const orig = rlAny._writeToOutput;
+    if (isTTY && orig) {
+      rlAny._writeToOutput = (s: string) => {
+        /* 只放行换行与 ANSI 控制，屏蔽键入字符回显 */
+        if (s === '\r\n' || s === '\n' || /\x1b\[[0-9;?]*[a-zA-Z]/.test(s)) orig.call(rl, s);
+      };
+    }
+    sinkPrompt = '';
+    awaitingApproval = true;
+    const answer = await new Promise<string>((resolve) => {
+      sink = (l) => {
+        awaitingApproval = false;
+        sink = null;
+        if (orig) rlAny._writeToOutput = orig;
+        resolve(l);
+      };
+      if (isTTY) writeContent(C.yellow + '🔑 ' + C.reset);
+    });
+    awaitingApproval = false;
+    if (orig) rlAny._writeToOutput = orig;
+    if (busyActive) {
+      sink = busySink;
+      sinkPrompt = '';
+    } else {
+      sink = null;
+      setPromptSync('❯ ');
+    }
+    writeContent('  ' + C.dim + '→ ******' + C.reset + '\n');
+    resumeStatusClock();
+    return answer.trim();
+  };
+
+  opts.onReady?.({ askQuestion, askSecret });
 
   for (;;) {
     if (exitRequested) break;
@@ -616,11 +741,14 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       continue;
     }
 
-    /* 用户指令入日志（超长截断回显） */
-    log('');
-    const echo = trimmed.length > 120 ? `${trimmed.slice(0, 120)}…（共 ${trimmed.length} 字符）` : trimmed;
-    log('  ' + badge(t('repl.badge.you')) + C.bold + ' ' + echo.split('\n').join(' ↵ ') + C.reset);
-    log('');
+    /* 用户指令回显：TTY 下 readline 已在 ❯ 后回显，不再重复；
+       非 TTY（管道/重定向输入）才手动打印一次清晰回显。 */
+    if (!isTTY) {
+      const echo = trimmed.length > 120 ? `${trimmed.slice(0, 120)}…（共 ${trimmed.length} 字符）` : trimmed;
+      log('');
+      log('  ' + badge(t('repl.badge.you')) + C.bold + ' ' + echo.split('\n').join(' ↵ ') + C.reset);
+      log('');
+    }
 
     busy = true;
     busyActive = true;
@@ -651,7 +779,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       log(divider());
       log('');
       if (text && !opts.streams) {
-        log(C.gray + '  ' + text + C.reset);
+        logBody(C.gray + text + C.reset);
       }
       if (inputQueue.length > 0) {
         log(C.dim + `  （${inputQueue.length} 条排队输入将依次处理）` + C.reset);
@@ -662,7 +790,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       flushTextBuffer();
       const msg = err instanceof Error ? err.message : String(err);
       log('');
-      log('  ' + errorLabel(`${t('repl.error')} ${msg}`));
+      logBody(errorLabel(`${t('repl.error')} ${msg}`));
       /* 欠费/权限类错误给出可操作提示 */
       if (
         /overdue-payment|access denied|account is in good standing|insufficient balance|balance insufficient|quota/i.test(

@@ -13,7 +13,7 @@
 #
 # 终端应用连接（.env）：
 #   REDIS_URL=redis://localhost:6380
-#   PG_CONNECTION_STRING=postgres://postgres:491220@localhost:15434/ai_agent
+#   PG_CONNECTION_STRING=postgres://postgres:<你的密码>@localhost:15434/ai_agent
 
 version: '3.8'
 
@@ -44,7 +44,7 @@ services:
       - '15434:5432' # 宿主机 15434（避开本地 PostgreSQL 5432 与 Windows 保留端口段 5402-5501）
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=491220
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD（参考 .env.example）}
       - POSTGRES_DB=ai_agent
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -68,3 +68,4 @@ networks:
 # docker-compose：Redis+PostgreSQL 基础设施编排
 # 修改记录：
 #   2026-10-02 postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）
+#   2026-10-03 POSTGRES_PASSWORD 改为 \ 环境变量注入（移除硬编码 491220）

@@ -285,6 +285,63 @@ function classifyRedirectTarget(target: string, workdir: string): ShellVerdict {
   return isInside(workdir, resolved) ? 'safe' : 'deny';
 }
 
+/** 参数是否"看起来像路径"（绝对 / 含分隔符 / ~ / 变量）——需参与越界校验。 */
+function looksLikePath(w: string): boolean {
+  const s = w.replace(/^["']|["']$/g, '');
+  if (!s || s.startsWith('-')) return false;
+  if (s.includes('$') || s.includes('%') || s.startsWith('~')) return true; // 变量/波浪号 → 不可静态验证
+  if (/^[A-Za-z]:[/\\]/.test(s)) return true; // Windows 绝对路径
+  if (s.startsWith('/') || s.startsWith('\\')) return true; // POSIX 绝对路径
+  if (s.includes('/') || s.includes('\\')) return true; // 含分隔符（含 ../.. 逃逸）
+  if (s === '.' || s === '..') return true;
+  return false;
+}
+
+/** 不读文件、参数只是文本的命令（其参数不参与路径校验）。 */
+const NO_PATH_READ = new Set(['echo', 'write-output']);
+
+/**
+ * 提取只读命令的目标路径参数。
+ *   - 跳过 flag；grep 家族（grep/rg/findstr）跳过第一个非 flag（pattern）；
+ *   - PowerShell 跳过 -Pattern/-Regex/-Filter/-Include/-Exclude 的值；
+ *   - 只返回"看起来像路径"的参数（相对裸文件名解析后在区内，无需校验）。
+ */
+function extractReadTargets(segment: string): string[] {
+  const words = segmentWords(segment);
+  const head = headCommandName(segment);
+  if (NO_PATH_READ.has(head)) return [];
+  const grepFamily = new Set(['grep', 'rg', 'findstr', 'egrep', 'fgrep']);
+  const patternFlags = new Set(['-pattern', '-regex', '-filter', '-include', '-exclude']);
+  const out: string[] = [];
+  let sawNonFlag = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (patternFlags.has(w.toLowerCase())) {
+      i++; // 跳过 pattern 值（不是路径）
+      continue;
+    }
+    if (w.startsWith('-')) continue;
+    if (grepFamily.has(head) && !sawNonFlag) {
+      sawNonFlag = true;
+      continue; // grep 家族第一个非 flag 是 pattern
+    }
+    if (looksLikePath(w)) out.push(w);
+  }
+  return out;
+}
+
+/** 只读目标越界判定：工作区/extraReadRoots 内 → safe；变量/波浪号 → ask；否则 deny。 */
+function classifyReadTarget(target: string, workdir: string, extraReadRoots: string[]): ShellVerdict {
+  const cleaned = target.replace(/^["']|["']$/g, '');
+  if (cleaned.includes('$') || cleaned.includes('%') || cleaned.startsWith('~')) return 'ask';
+  const resolved = path.resolve(workdir, cleaned);
+  if (isInside(workdir, resolved)) return 'safe';
+  for (const root of extraReadRoots) {
+    if (isInside(root, resolved)) return 'safe';
+  }
+  return 'deny';
+}
+
 /** 判断单个段是否"只读安全"。 */
 function isReadOnlySegment(segment: string): boolean {
   const words = segmentWords(segment);
@@ -327,7 +384,11 @@ function isReadOnlySegment(segment: string): boolean {
  * @param command 完整命令行（可能含管道/链接/重定向）
  * @param workdir 当前工作区（重定向目标与敏感路径的判定基准）
  */
-export function classifyShellCommand(command: string, workdir: string): ShellClassification {
+export function classifyShellCommand(
+  command: string,
+  workdir: string,
+  extraReadRoots: string[] = [],
+): ShellClassification {
   const trimmed = command.trim();
   if (!trimmed) return { verdict: 'ask', reason: 'empty command' };
 
@@ -398,6 +459,20 @@ export function classifyShellCommand(command: string, workdir: string): ShellCla
       }
       needsAsk = true;
       askReason = askReason || `命令引用敏感文件: ${cleaned}`;
+    }
+
+    /* 只读命令目标路径校验：不得越界读工作区外普通文件（与写重定向同语义） */
+    if (isReadOnlySegment(segment)) {
+      for (const target of extractReadTargets(segment)) {
+        const rv = classifyReadTarget(target, workdir, extraReadRoots);
+        if (rv === 'deny') {
+          return { verdict: 'deny', reason: `只读命令目标越出工作区: ${target}` };
+        }
+        if (rv === 'ask') {
+          needsAsk = true;
+          askReason = askReason || `只读命令目标无法静态验证: ${target}`;
+        }
+      }
     }
 
     /* 只读白名单判定 */

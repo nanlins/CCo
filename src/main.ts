@@ -17,6 +17,7 @@ import { OpenAiLlm } from './llm/openai.js';
 import { MockLlm, type ScriptedTurn } from './llm/mock.js';
 import { Agent, type AgentEvent } from './core/agent.js';
 import { HookRegistry } from './core/hooks.js';
+import { loadUserHooks, loadProjectHooks } from './core/hookLoader.js';
 import { PermissionGate } from './core/permission.js';
 import { ToolRegistry } from './core/registry.js';
 import { AuditLog, Transcript, listResumableSessions } from './core/transcript.js';
@@ -44,6 +45,13 @@ import { ConfigWatcher } from './core/configWatcher.js';
 import { SessionManager } from './core/sessionManager.js';
 import { PluginMarket } from './core/pluginMarket.js';
 import { exportConversation } from './core/exportConversation.js';
+import { loadProjectInstructions } from './core/projectInstructions.js';
+import { evaluateGoal } from './core/goalJudge.js';
+import { handleGoalCommand } from './core/goalCommands.js';
+import { runFirstRunWizard } from './core/firstRunWizard.js';
+import { runWorkflow, type WorkflowStep } from './core/workflowRuntime.js';
+import { Sandbox } from './core/sandbox.js';
+import { wrapForGutter } from './core/terminal.js';
 import { setLocale, getLocale, t } from './core/i18n.js';
 import fs from 'node:fs';
 import type { Message, Session, PermissionMode } from './types.js';
@@ -70,6 +78,20 @@ const DEMO_SCRIPT: ScriptedTurn[] = [
     ],
   },
 ];
+
+/** 稳定基础 system prompt 段（不随项目指令变化）。 */
+const STABLE_BASE_SYSTEM =
+  'You are 小锤 (Anvil), a coding assistant. ' +
+  'Use tools to solve tasks efficiently. ' +
+  "Act, don't explain unless asked. Plan with TodoWrite for multi-step work (mark each item completed as you finish it). " +
+  'Never claim a task completed until you verified it. ' +
+  'When a task needs reading/searching many files, batch multiple read_file/glob/grep calls into one turn so they run in parallel. ' +
+  'Read documents COMPLETELY: if you use limit, continue with offset until the whole file is covered — never cite a document you only partially read. ' +
+  "Explore project structure with list_files recursive=true or glob '**' patterns, not shell commands. " +
+  'For large-scale reading (more than ~8 files or ~200KB of text), split the work: spawn_subagent per file group (each returns a structured summary with file:line evidence), or index_docs + search_docs to retrieve on demand instead of loading everything.';
+
+/** 项目指令段前缀（把用户项目指令与基础段清晰分隔）。 */
+const PROJECT_INSTRUCTIONS_PREFIX = '\n\n# 项目指令（来自 ANVIL.md / CLAUDE.md / AGENTS.md）\n';
 
 export interface Harness {
   config: AppConfig;
@@ -98,6 +120,8 @@ export interface Harness {
   plugins: PluginMarket;
   /** 配置热重载监听（.env / settings.json / servers.json）。 */
   watcher: ConfigWatcher;
+  /** 已加载的项目指令文件（ANVIL.md / CLAUDE.md / AGENTS.md），供首屏提示。 */
+  projectInstructionFiles: string[];
   /** 按当前 config 重建 LLM 实例并热替换（/apikey /baseurl /protocol 后调用）。 */
   rebuildLlm: () => void;
   setAsk: (impl: (question: string) => Promise<boolean>) => void;
@@ -137,18 +161,15 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
   const workspaceDir = config.workspaceDir;
   const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+  /* 稳定基础段 + 项目指令段（发现不到指令文件也不崩溃）。 */
+  const projectInstructions = loadProjectInstructions(workspaceDir);
+
   const session: Session = {
     id: sessionId,
     cwd: workspaceDir,
-    baseSystem:
-      'You are 小锤 (Anvil), a coding assistant. ' +
-      'Use tools to solve tasks efficiently. ' +
-      "Act, don't explain unless asked. Plan with TodoWrite for multi-step work (mark each item completed as you finish it). " +
-      'Never claim a task completed until you verified it. ' +
-      'When a task needs reading/searching many files, batch multiple read_file/glob/grep calls into one turn so they run in parallel. ' +
-      'Read documents COMPLETELY: if you use limit, continue with offset until the whole file is covered — never cite a document you only partially read. ' +
-      "Explore project structure with list_files recursive=true or glob '**' patterns, not shell commands. " +
-      'For large-scale reading (more than ~8 files or ~200KB of text), split the work: spawn_subagent per file group (each returns a structured summary with file:line evidence), or index_docs + search_docs to retrieve on demand instead of loading everything.',
+    baseSystem: projectInstructions.text
+      ? STABLE_BASE_SYSTEM + PROJECT_INSTRUCTIONS_PREFIX + projectInstructions.text
+      : STABLE_BASE_SYSTEM,
     messages: [],
     todos: [],
     startTime: Date.now(),
@@ -235,6 +256,7 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
     askChoice: askChoiceFn,
     classifier,
     settings: loadPermissionSettings(workspaceDir),
+    extraReadRoots: config.extraReadRoots,
   });
 
   /* 配置热重载：监听 .env / settings.json / servers.json 变化，自动重读权限规则。
@@ -271,19 +293,23 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
   });
 
   /* Stop 闸门：建了 TodoWrite 计划就必须做完（或明确说明）才能结束。
-     agent 对 blockingError 只重试一次（stopHookActive 防死循环）。 */
+     agent 对 blockingError 只重试一次（stopHookActive 防死循环）。
+     独立完成判定层：除 Todo 清空外，用 evaluateGoal 校验每步 verify 判据是否被证据证实，
+     不依赖模型空口"声称完成"。 */
   hooks.register('Stop', () => {
     const todos = session.todos;
-    if (todos.length === 0) return undefined;
-    const open = todos.filter((t) => t.status !== 'completed');
-    if (open.length === 0) return undefined;
-    const names = open
-      .slice(0, 5)
-      .map((t) => t.content)
-      .join('；');
-    return {
-      blockingError: `Todo 尚有 ${open.length} 项未完成（${names}${open.length > 5 ? '…' : ''}）。请继续完成；确实无法完成的，说明原因后再结束。`,
-    };
+    const goal = [...session.messages]
+      .reverse()
+      .find((m) => m.role === 'user' && typeof m.content === 'string')?.content;
+    /* 结构化 verifier（若任务提供）在此注入真实文件/命令校验；无则退回结构校验（TODO 清空）。 */
+    const judgment = evaluateGoal({
+      goal: typeof goal === 'string' ? goal : '',
+      todos,
+      verifiers: session.verifiers,
+      ctx: { workdir: workspaceDir, commandResults: session.commandResults },
+    });
+    if (judgment.complete) return undefined;
+    return { blockingError: `完成判定未通过：${judgment.reason}` };
   });
 
   /* 安全：UserPromptSubmit 阶段检测 Prompt Injection（OWASP 参考） */
@@ -305,6 +331,10 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
   const log = (level: string, msg: string): void => {
     if (level === 'warn' || level === 'error') console.error(`[${level}] ${msg}`);
   };
+
+  /* 用户级 hook（~/.anvil/hooks.json，视为可信）；项目级 hook 走信任门，
+     在 REPL 就绪（可交互确认）后再加载，见 onReady。 */
+  loadUserHooks(hooks, log);
 
   /* 每轮 LLM 调用前注入：后台任务结果 + cron 触发 + MCP channel 通知（s13/s14/s19 通知合入） */
   const inject = async (): Promise<Message[]> => {
@@ -437,6 +467,7 @@ export function createHarness(overrides: HarnessOverrides = {}): Harness {
     sessions,
     plugins,
     watcher,
+    projectInstructionFiles: projectInstructions.files,
     rebuildLlm: () => {
       /* /apikey /baseurl /protocol 之后：重建 LLM 实例并热替换，不得继续使用 Mock */
       llm = buildLlm(config);
@@ -465,6 +496,7 @@ const HELP_TEXT = `命令：
   /tools     列出可用工具
   /config    显示配置摘要
   /compact   强制压缩对话
+  /goal      登记/查看完成验证器（/goal file <path> | contains | command | clear）
   /tasks     显示任务看板
   /memory    显示记忆目录
   /team      显示队友
@@ -487,6 +519,104 @@ const HELP_TEXT = `命令：
 其他输入都会发送给 agent。行尾加反斜杠 \\ 可多行输入；Ctrl+C 取消当前任务。
 运行中：输入 > 查询当前进度；输入普通文字会排队，任务结束后依次处理。`;
 
+/** 首次启动交互式配置向导：读取 provider/Key/模型并验证，成功后落盘并切换真实 LLM。 */
+async function runSetupWizard(
+  harness: Harness,
+  io: { askQuestion: (q: string) => Promise<string>; askSecret: (q: string) => Promise<string> },
+): Promise<void> {
+  const go = (await io.askQuestion('未检测到 API key。是否进入交互式配置向导？[y/N] ')).trim().toLowerCase();
+  if (go !== 'y' && go !== 'yes') return;
+  const result = await runFirstRunWizard({
+    ask: io.askQuestion,
+    askSecret: io.askSecret,
+    log: (m) => console.log('  ' + m),
+  });
+  if (!result) return;
+  const ws = harness.config.workspaceDir;
+  if (result.protocol === 'openai') {
+    setEnvValue(ws, 'LLM_PROTOCOL', 'openai');
+    setEnvValue(ws, 'OPENAI_API_KEY', result.apiKey);
+    setEnvValue(ws, 'OPENAI_BASE_URL', result.baseUrl);
+    setEnvValue(ws, 'MODEL_ID', result.model);
+    harness.config.llmProtocol = 'openai';
+    harness.config.openaiApiKey = result.apiKey;
+    harness.config.openaiBaseUrl = result.baseUrl;
+    harness.config.model = result.model;
+  } else {
+    setEnvValue(ws, 'LLM_PROTOCOL', 'anthropic');
+    setEnvValue(ws, 'ANTHROPIC_API_KEY', result.apiKey);
+    setEnvValue(ws, 'ANTHROPIC_BASE_URL', result.baseUrl);
+    setEnvValue(ws, 'MODEL_ID', result.model);
+    harness.config.llmProtocol = 'anthropic';
+    harness.config.apiKey = result.apiKey;
+    harness.config.baseUrl = result.baseUrl;
+    harness.config.model = result.model;
+  }
+  harness.config.mock = false;
+  harness.rebuildLlm();
+  console.log('  配置已保存到 .env，模型实例已切换为真实 LLM。');
+}
+
+interface WorkflowSpecStep {
+  id?: unknown;
+  title?: unknown;
+  dependsOn?: unknown;
+  command?: unknown;
+}
+
+/** /workflow：按 JSON spec 驱动固定步骤编排（journal 持久化 + 可恢复 + 依赖并行）。 */
+async function runWorkflowSpec(harness: Harness, specRaw: string): Promise<string> {
+  let spec: { steps?: WorkflowSpecStep[] };
+  try {
+    spec = JSON.parse(specRaw) as { steps?: WorkflowSpecStep[] };
+  } catch {
+    try {
+      spec = JSON.parse(fs.readFileSync(specRaw, 'utf-8')) as { steps?: WorkflowSpecStep[] };
+    } catch {
+      return '工作流 spec 解析失败：需合法 JSON 字符串或 JSON 文件路径。';
+    }
+  }
+  const rawSteps = Array.isArray(spec.steps) ? spec.steps : [];
+  if (rawSteps.length === 0) return '工作流 spec 无步骤（需 {"steps":[{id,title,command,dependsOn?}]}）。';
+  const steps: WorkflowStep<{ workdir: string }>[] = rawSteps.map((s) => ({
+    id: String(s.id ?? ''),
+    title: String(s.title ?? s.id ?? ''),
+    dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.map(String) : undefined,
+    run: async (ctx) => {
+      const cmd = String(s.command ?? '');
+      if (!cmd) return;
+      /* 与 bash/bg_run 同管线：deny list → 权限分类（含越界读/写）→ 审批 → 沙箱执行 */
+      const blocked = Sandbox.blockedByDenyList(cmd);
+      if (blocked) {
+        harness.audit.event('workflow_step', { id: String(s.id ?? ''), command: cmd, allow: false, reason: blocked });
+        throw new Error(blocked);
+      }
+      const decision = await harness.permission.check('bash', { command: cmd }, { workdir: ctx.workdir });
+      harness.audit.event('workflow_step', {
+        id: String(s.id ?? ''),
+        command: cmd,
+        allow: decision.allow,
+        reason: decision.reason,
+      });
+      if (!decision.allow) throw new Error(`权限拒绝: ${decision.reason}（${cmd.slice(0, 80)}）`);
+      const sandbox = new Sandbox({
+        cwd: ctx.workdir,
+        sandboxCmd: harness.config.sandboxCmd,
+        maxOutputChars: harness.config.maxToolOutputChars,
+      });
+      const out = await sandbox.run(cmd);
+      harness.audit.event('workflow_step_done', { id: String(s.id ?? ''), output: out.slice(0, 200) });
+    },
+  }));
+  const journalPath = path.join(harness.config.workspaceDir, '.workflow', 'journal.json');
+  const result = await runWorkflow(steps, { workdir: harness.config.workspaceDir }, { journalPath, parallel: true });
+  return [
+    `工作流完成：${result.completed.length} 步成功，${result.failed.length} 步失败（journal: ${journalPath}）`,
+    ...result.completed.map((id) => `  ✓ ${id}`),
+    ...result.failed.map((f) => `  ✗ ${f.id}: ${f.error}`),
+  ].join('\n');
+}
+
 async function main(): Promise<void> {
   const harness = createHarness();
   const activeKey = harness.config.llmProtocol === 'openai' ? harness.config.openaiApiKey : harness.config.apiKey;
@@ -496,16 +626,35 @@ async function main(): Promise<void> {
     banner: `小锤 Anvil — ${harness.config.mock ? 'MOCK' : `[${harness.config.llmProtocol}] ${harness.config.model}`} | mode=${harness.config.permissionMode} | workdir=${harness.config.workspaceDir}\nType /help for commands.`,
     streams: true,
     needsConfig,
-    onReady: (askQuestion) => {
+    projectInstructionFiles: harness.projectInstructionFiles,
+    onReady: (io) => {
       harness.setAsk(async (q) => {
-        const answer = await askQuestion(q);
+        const answer = await io.askQuestion(q);
         return ['y', 'yes'].includes(answer.trim().toLowerCase());
       });
       /* 富审批：shell 命令批量授权（y=本次 / a=本任务同类 / n=拒绝） */
       harness.setAskChoice(async (q) => {
-        const answer = (await askQuestion(q)).trim().toLowerCase();
+        const answer = (await io.askQuestion(q)).trim().toLowerCase();
         return answer;
       });
+      /* 首次启动配置向导 + 项目级 hook 信任确认（串行，避免并发占用输入通道） */
+      void (async () => {
+        if (needsConfig) await runSetupWizard(harness, io);
+        /* 项目级 hook：未信任则展示将执行的命令并请求确认（信任按内容指纹持久化） */
+        await loadProjectHooks(
+          harness.hooks,
+          harness.config.workspaceDir,
+          (level, msg) => {
+            if (level === 'warn' || level === 'error') console.error(`[${level}] ${msg}`);
+          },
+          {
+            confirmProject: async (summary) => {
+              const answer = await io.askQuestion(summary);
+              return ['y', 'yes'].includes(answer.trim().toLowerCase());
+            },
+          },
+        );
+      })();
     },
     onCommand: async (cmd: string, args: string[]): Promise<string | void> => {
       switch (cmd) {
@@ -513,12 +662,54 @@ async function main(): Promise<void> {
           harness.session.messages = [];
           harness.session.todos = [];
           return 'History cleared.';
-        case 'tools':
-          return `Available: ${harness.registry.list().join(', ')}`;
+        case 'tools': {
+          const names = harness.registry.list();
+          return `可用工具（${names.length}）:\n` + wrapForGutter(names.join('  '), 4);
+        }
+        case 'verify': {
+          const activeKey =
+            harness.config.llmProtocol === 'openai' ? harness.config.openaiApiKey : harness.config.apiKey;
+          if (harness.config.mock || !activeKey) {
+            return '未配置真实 API key（当前为 Mock 离线模式）。请先 /apikey sk-xxx，再 /verify 验证连接。';
+          }
+          try {
+            const r = await harness.llm.complete({
+              system: '你是一个连接测试助手，只需回复 OK。',
+              messages: [{ role: 'user', content: 'ping' }],
+              tools: [],
+              maxTokens: 16,
+            });
+            return `连接成功 ✅ model=${r.model}`;
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            return `连接失败 ❌ ${msg.slice(0, 200)}（请检查 /apikey /baseurl /protocol /model 配置）`;
+          }
+        }
+        case 'workflow': {
+          const specRaw = args.join(' ').trim();
+          if (!specRaw) {
+            return '用法: /workflow \'{"steps":[{"id":"a","title":"…","command":"…"}]}\'（或传 JSON 文件路径）';
+          }
+          return await runWorkflowSpec(harness, specRaw);
+        }
         case 'config': {
           const proto = harness.config.llmProtocol;
           const baseUrl = proto === 'openai' ? harness.config.openaiBaseUrl : harness.config.baseUrl;
           const key = proto === 'openai' ? harness.config.openaiApiKey : harness.config.apiKey;
+          const snapshot = {
+            protocol: proto,
+            model: harness.config.model,
+            baseUrl,
+            apiKey: maskKey(key),
+            mode: harness.config.permissionMode,
+            sandbox: harness.config.sandboxCmd ?? null,
+            dockerSandbox: harness.config.dockerSandbox,
+            mock: harness.config.mock,
+            session: harness.session.id,
+            maxToolCalls: harness.config.maxToolCallsPerRun ?? 80,
+            maxRunOutputTokens: harness.config.maxRunOutputTokens ?? 200000,
+          };
+          if (args.includes('--json')) return JSON.stringify(snapshot, null, 2);
           return [
             `protocol=${proto}`,
             `model=${harness.config.model}`,
@@ -533,6 +724,8 @@ async function main(): Promise<void> {
             `maxRunOutputTokens=${harness.config.maxRunOutputTokens ?? 200000}`,
           ].join('  ');
         }
+        case 'goal':
+          return handleGoalCommand(harness.session, args);
         case 'compact': {
           if (harness.session.messages.length === 0) return '（尚无对话）';
           const result = await compactHistory(harness.session.messages, harness.llm, {
@@ -674,6 +867,20 @@ async function main(): Promise<void> {
         }
         case 'sessions': {
           const list = harness.sessions.list();
+          if (args.includes('--json')) {
+            return JSON.stringify(
+              {
+                sessions: list.map((s) => ({
+                  id: s.id,
+                  createdAt: new Date(s.createdAt).toISOString(),
+                  messageCount: s.messageCount,
+                  lastMessage: s.lastMessage ?? null,
+                })),
+              },
+              null,
+              2,
+            );
+          }
           if (list.length === 0) return '（无可恢复会话）';
           return list
             .map(
@@ -689,10 +896,11 @@ async function main(): Promise<void> {
         }
         case 'export': {
           if (harness.session.messages.length === 0) return '（尚无对话可导出）';
-          const format = args[0] === 'json' ? 'json' : 'markdown';
+          const wantJson = args.includes('--json') || args[0] === 'json';
+          const format = wantJson ? 'json' : 'markdown';
           const content = exportConversation(harness.session.messages, format);
           const outFile =
-            args[1] ??
+            args.find((a) => a !== '--json' && a !== 'json') ??
             path.join(
               harness.config.workspaceDir,
               `.transcripts`,
@@ -704,8 +912,29 @@ async function main(): Promise<void> {
         }
         case 'plugins': {
           const installed = harness.plugins.listInstalled();
-          if (installed.length === 0) return '（未安装 plugin）';
-          return installed.map((p) => `${p.name}${p.version ? ` v${p.version}` : ''} — ${p.description}`).join('\n');
+          const status = harness.plugins.registryStatus();
+          const list =
+            installed.length === 0
+              ? '（未安装 plugin）'
+              : installed.map((p) => `${p.name}${p.version ? ` v${p.version}` : ''} — ${p.description}`).join('\n');
+          return `${list}\n${status.hint}`;
+        }
+        case 'plugin-search': {
+          const query = args.join(' ').trim();
+          const status = harness.plugins.registryStatus();
+          if (!status.configured) return status.hint;
+          try {
+            const results = await harness.plugins.searchRegistry(query);
+            if (results.length === 0) return `registry 无匹配结果（query="${query}"）。${status.hint}`;
+            return results
+              .map(
+                (p) =>
+                  `${p.installed ? '[已装] ' : ''}${p.name}${p.version ? ` v${p.version}` : ''} — ${p.description}${p.author ? ` (by ${p.author})` : ''}`,
+              )
+              .join('\n');
+          } catch (e) {
+            return `registry 搜索失败: ${e instanceof Error ? e.message : String(e)}`;
+          }
         }
         case 'plugin-install': {
           if (!args[0]) return '用法: /plugin-install <本地路径>';

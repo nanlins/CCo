@@ -50,11 +50,21 @@ export interface Session {
   messages: Message[];
   todos: TodoItem[];
   startTime: number;
-  /** 跨压缩的会话摘要（SessionMemoryCompact 用）。 */
+  /** 会话记忆（SessionMemoryCompact 用）。 */
   sessionMemory?: string;
-  /** 研究任务的必答问题清单（交付检查表）。 */
+  /** 本轮任务的检查清单（可编辑）。 */
   checklist?: string[];
+  /** 结构化完成验证器（可选，由任务提供；供 Stop 钩子真实验证）。 */
+  verifiers?: GoalVerifier[];
+  /** 本轮工具命令退出码（供 commandExit0 验证器）。 */
+  commandResults?: Array<{ command: string; exitCode: number }>;
 }
+
+/** 结构化完成验证器（goalJudge 真实验证用）。 */
+export type GoalVerifier =
+  | { kind: 'fileExists'; path: string }
+  | { kind: 'fileContains'; path: string; text: string }
+  | { kind: 'commandExit0'; command: string };
 
 export interface ToolSchema {
   name: string;
@@ -80,8 +90,9 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 /**
  * 权限模式：
  *   ask    —— 非明确 safe 的操作一律询问用户；
- *   auto   —— 仅"明确 safe 分类"（只读白名单命令 / 工作区内写入 / classifier=safe）自动放行，
- *             未知或危险命令仍转人工审批（不再自动放行）；
+ *   auto   —— 自动放行"非危险"操作：只读白名单 / classifier=safe / 工作区内写入，
+ *             以及评测为非 deny 且非 classifier=unsafe 的 shell 命令（审批卡 [t] 切换后的模式）；
+ *             deny list（危险命令）仍拒绝，classifier 判 unsafe 仍转人工审批；
  *   deny   —— 拒绝一切需要审批的操作（只读工具除外）；
  *   bypass —— 危险语义：跳过一切人工审批（等价旧版 auto 的放行行为）。
  *             仅在完全可信的隔离环境使用，风险自负。
