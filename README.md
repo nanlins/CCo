@@ -1,8 +1,8 @@
-# 手搓 Claude Code（Hand-rolled Claude Code）
+Hand-rolled Claude Code
 
 [![CI/CD](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml)
 
-> 从零构建的 Agent Harness —— 用 4 个里程碑复刻 Claude Code 的架构骨架。
+> 从零构建的 Agent Harness 。
 > 智能来自模型，Agent 产品 = 模型 + Harness。这个仓库是"造载具"的练习。
 
 零业务依赖（仅 `@anthropic-ai/sdk` + `dotenv`），TypeScript，`node:test` 测试，`MOCK=1` 离线可跑。
@@ -113,7 +113,7 @@ docker-compose down            # 停止（保留数据卷）
 docker-compose down -v         # 停止 + 删除数据卷
 ```
 
-### 架构说明（面试可讲）
+### 架构说明
 
 - **多阶段 Dockerfile**：构建 → 生产依赖 → 精简运行镜像（3 层）
 - **服务编排**：`depends_on` + 健康检查保证启动顺序
@@ -133,7 +133,7 @@ docker-compose down -v         # 停止 + 删除数据卷
 | M3 长会话与可靠性 | 四层压缩 + Memory + system prompt 分段组装 + 错误恢复 + 流式            | `src/core/compact.ts` `memory.ts` `prompt.ts` `recovery.ts`                                               |
 | M4 协作与生产化   | 任务系统 + 后台任务 + cron + 团队/协议/自治 + worktree + MCP + 可观测性 | `src/tools/tasks.ts` `background.ts` `cron.ts` `teams.ts` `worktree.ts` `mcp.ts` `src/core/transcript.ts` |
 
-## 比教学版更早、更重投入的三件事
+## 三件事
 
 1. **安全第一**：bash 命令走 `Sandbox`（deny list 纵深防御 + 超时 + 输出上限 + 可选 `SANDBOX_CMD` 容器包装）；
    **完整命令分类器**（`commandClassifier.ts`）：引号感知分段，`;` `&&` `||` `|` 子 shell 逐段判断，
@@ -156,7 +156,7 @@ docker-compose down -v         # 停止 + 删除数据卷
 3. **测试与可观测性**：`node:test` + `MockLlm` 剧本测试（无网络）；每个会话 `.transcripts/<id>.jsonl` 全事件回放；
    `.audit/events.jsonl` 权限与 worktree 审计流。见 `tests/`、`src/core/transcript.ts`。
 
-## 生产级机制（对齐真实 CC）
+## 生产级机制
 
 - **Hook 16 事件**：UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / SessionStart / SessionEnd /
   Stop（支持 blockingError 自纠 + stopHookActive 防死循环）/ PreCompact / PostCompact / PermissionRequest /
