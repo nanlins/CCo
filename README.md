@@ -132,6 +132,7 @@ docker compose down -v         # 停止 + 删除数据卷
 - **pack**：`npm pack` → tarball 内容断言 → 隔离安装 → 真实执行 CLI `--version`/`--help` → EOF 退出码断言
 - **compose**：`docker compose config`（哨兵密码，不依赖真实 .env）
 - **docker**：`docker build` 产出镜像（PR 与 main 都构建，不推送）
+- **workflow-lint**：actionlint 校验 workflow 语法/表达式（防止非法 workflow 静默失效）
 
 ## 4 个里程碑（本仓库全部实现）
 
