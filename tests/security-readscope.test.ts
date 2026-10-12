@@ -47,8 +47,26 @@ test('P1: pluginMarket registryStatus 未配置 → 明确提示', () => {
   const market = new PluginMarket(dir);
   const s = market.registryStatus();
   assert.equal(s.configured, false);
-  assert.match(s.hint, /ANVIL_PLUGIN_REGISTRY/);
+  assert.match(s.hint, /CCO_PLUGIN_REGISTRY/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('P1: 旧名 ANVIL_PLUGIN_REGISTRY 仍兼容（deprecated）；新名优先', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-pm-legacy-'));
+  const market = new PluginMarket(dir);
+  const legacy = 'https://example.com/legacy-index.json';
+  const current = 'https://example.com/current-index.json';
+  process.env.ANVIL_PLUGIN_REGISTRY = legacy;
+  try {
+    assert.equal(market.registryStatus().configured, true);
+    assert.equal(market.registryStatus().url, legacy);
+    process.env.CCO_PLUGIN_REGISTRY = current;
+    assert.equal(market.registryStatus().url, current, '新名应优先于旧名');
+  } finally {
+    delete process.env.ANVIL_PLUGIN_REGISTRY;
+    delete process.env.CCO_PLUGIN_REGISTRY;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('P1: pluginMarket URL 安装拒绝路径穿越', async () => {

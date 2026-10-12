@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadDotenvLayered } from '../src/config.js';
+import { loadDotenvLayered, loadConfig } from '../src/config.js';
 import { setEnvValue } from '../src/core/configManager.js';
 
 const KEYS: string[] = [];
@@ -98,5 +98,31 @@ test('损坏的 .env 不影响加载', () => {
     cleanupEnv();
     fs.rmSync(ws, { recursive: true, force: true });
     fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+/* ---------- 命名规范：CCO_ 前缀（新名）与旧名兼容（deprecated） ---------- */
+
+test('CCO_ 前缀优先，旧名兼容（loadConfig）', () => {
+  try {
+    setEnv('MODEL_ID', 'legacy-model');
+    setEnv('CCO_MODEL_ID', 'cco-model');
+    assert.equal(loadConfig().model, 'cco-model', 'CCO_MODEL_ID 应优先于 MODEL_ID');
+    /* 只剩旧名时仍被读取 */
+    delete process.env.CCO_MODEL_ID;
+    assert.equal(loadConfig().model, 'legacy-model', '旧名 MODEL_ID 应仍兼容');
+  } finally {
+    cleanupEnv();
+  }
+});
+
+test('CCO_CWD 优先于 HARNESS_CWD（旧名兼容）', () => {
+  try {
+    setEnv('HARNESS_CWD', path.resolve('legacy-ws'));
+    assert.equal(loadConfig().workspaceDir, path.resolve('legacy-ws'), '旧名 HARNESS_CWD 应兼容');
+    setEnv('CCO_CWD', path.resolve('new-ws'));
+    assert.equal(loadConfig().workspaceDir, path.resolve('new-ws'), 'CCO_CWD 应优先');
+  } finally {
+    cleanupEnv();
   }
 });
