@@ -72,15 +72,18 @@ jobs:
           npm pack --silent
           TGZ=$(find . -maxdepth 1 -name 'nanlins-cco-*.tgz' -print -quit)
           echo "tarball: $TGZ"
+          tar -tzf "$TGZ" > /tmp/pack-list.txt
 
           # 1) tarball 内容断言：发布包必须含编译产物/入口/许可证/清单
-          tar -tzf "$TGZ" | grep -qx 'package/dist/main.js'
-          tar -tzf "$TGZ" | grep -qx 'package/bin/anvil.js'
-          tar -tzf "$TGZ" | grep -qx 'package/LICENSE'
-          tar -tzf "$TGZ" | grep -qx 'package/package.json'
+          # 注意：grep 读文件而非管道——`tar | grep -q` 在 pipefail 下会因 grep 提前退出
+          # 导致 tar 收到 SIGPIPE（141）使整个脚本中止（run 24 真实失败原因）
+          grep -qx 'package/dist/main.js' /tmp/pack-list.txt
+          grep -qx 'package/bin/anvil.js' /tmp/pack-list.txt
+          grep -qx 'package/LICENSE' /tmp/pack-list.txt
+          grep -qx 'package/package.json' /tmp/pack-list.txt
           # 源码/测试不得进入发布包
-          if tar -tzf "$TGZ" | grep -q '^package/src/'; then echo "FAIL: src/ 不应进入发布包"; exit 1; fi
-          if tar -tzf "$TGZ" | grep -q '^package/tests/'; then echo "FAIL: tests/ 不应进入发布包"; exit 1; fi
+          if grep -q '^package/src/' /tmp/pack-list.txt; then echo "FAIL: src/ 不应进入发布包"; exit 1; fi
+          if grep -q '^package/tests/' /tmp/pack-list.txt; then echo "FAIL: tests/ 不应进入发布包"; exit 1; fi
 
           # 2) 隔离安装
           mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
@@ -89,12 +92,12 @@ jobs:
           test -f node_modules/@nanlins/cco/dist/main.js
           node --check node_modules/@nanlins/cco/dist/main.js
 
-          # 3) 真实执行 CLI 的版本/帮助命令（退出码 + 输出双断言）
+          # 3) 真实执行 CLI 的版本/帮助命令（退出码 + 输出双断言；here-string 避免 SIGPIPE）
           out_version=$(node node_modules/.bin/anvil --version)
           echo "version output: $out_version"
-          echo "$out_version" | grep -Eq '^cco [0-9]+\.[0-9]+\.[0-9]+ \(anvil\)$'
+          grep -Eq '^cco [0-9]+\.[0-9]+\.[0-9]+ \(anvil\)$' <<< "$out_version"
           out_help=$(node node_modules/.bin/anvil --help)
-          echo "$out_help" | grep -q 'anvil --version'
+          grep -q 'anvil --version' <<< "$out_help"
 
           # 4) 无 TTY + EOF：REPL 必须自行退出（0）；124 = 卡死未退出 → 失败
           set +e
@@ -149,8 +152,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: actionlint（显式指定工作目录与路径，避免 docker:// action 的 cwd 差异）
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color .github/workflows
+      - name: actionlint（显式挂载工作区；路径参数不可传目录，actionlint 自行发现 .github/workflows）
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
 
 # 修改记录：
 #   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫（⚠ 该写法非法，见 2026-10-12 修复）
@@ -160,3 +163,6 @@ jobs:
 #              docker build 覆盖 PR（不再仅 main push）
 #   2026-10-12 根因修复：移除 job 级 if: hashFiles(...)（GitHub 判 workflow 无效 → 0 job 瞬时失败；
 #              自 2026-09-30 起 CI 连续全红）；新增 workflow-lint（actionlint）门禁防复发
+#   2026-10-12 run 24 遗留修复：pack 断言改「tar 列表落文件 + grep 读文件」（pipefail 下
+#              `tar | grep -q` 会因 grep 提前退出触发 SIGPIPE=141 中止脚本）；CLI 输出断言改 here-string；
+#              workflow-lint 去掉目录参数（actionlint 不接受目录，自行发现 .github/workflows）
