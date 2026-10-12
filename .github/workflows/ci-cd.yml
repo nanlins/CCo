@@ -122,8 +122,9 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: test
-    # Dockerfile 缺失时跳过（防止 CD 空转失败）；构建不推送，无需仓库权限
-    if: hashFiles('Dockerfile') != ''
+    # ⚠ 禁止在 job 级 if 使用 hashFiles：该函数仅允许在 step 级使用，job 级会让整个 workflow
+    #   被 GitHub 判为无效（run 创建后 0 job 瞬时失败）。2026-09-30~10-12 CI 全红即此原因。
+    #   Dockerfile 缺失时让 docker build 显式失败（响亮红灯优于静默跳过）。
     steps:
       - uses: actions/checkout@v4
 
@@ -143,9 +144,21 @@ jobs:
       #     docker tag $IMAGE_NAME ghcr.io/${{ github.repository }}/$IMAGE_NAME:latest
       #     docker push ghcr.io/${{ github.repository }}/$IMAGE_NAME:latest
 
+  # ---------- workflow 语法/表达式校验（actionlint；防止非法 workflow 静默失效） ----------
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
 # 修改记录：
-#   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫，杜绝 Dockerfile 缺失时流水线空转失败（2026-08-07~09-21 曾发生）
+#   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫（⚠ 该写法非法，见 2026-10-12 修复）
 #   2026-10-03 test 增加 Linux/Windows 矩阵 + 测试覆盖率；新增 audit（npm audit）与 pack（npm pack smoke）作业
 #   2026-10-12 交付质量修复：镜像名 cco；pack smoke 改为 tarball 内容断言 + CLI --version/--help 真实执行 +
 #              EOF 退出码断言（移除 `test "$code" != "1"` 弱断言）；新增 compose（docker compose config）作业；
 #              docker build 覆盖 PR（不再仅 main push）
+#   2026-10-12 根因修复：移除 job 级 if: hashFiles(...)（GitHub 判 workflow 无效 → 0 job 瞬时失败；
+#              自 2026-09-30 起 CI 连续全红）；新增 workflow-lint（actionlint）门禁防复发
