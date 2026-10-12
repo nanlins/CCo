@@ -1,7 +1,7 @@
 {
-  "name": "handrolled-claude-code",
+  "name": "@nanlins/cco",
   "version": "0.1.0",
-  "description": "手搓 Claude Code — 从零构建的 Agent Harness（4 里程碑：循环 / 扩展 / 上下文 / 协作）",
+  "description": "CCo — 从零构建的终端 Agent Harness（4 里程碑：循环 / 扩展 / 上下文 / 协作）",
   "type": "module",
   "license": "MIT",
   "repository": {
