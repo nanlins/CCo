@@ -23,7 +23,7 @@ const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-plan-'));
 Object.assign(process.env, {
   MOCK: process.env.MOCK ?? '0',
   PERMISSION_MODE: process.env.PERMISSION_MODE ?? 'auto',
-  HARNESS_CWD: workdir,
+  CCO_CWD: workdir,
   /* 默认启发式规划；设 AUTO_PLAN=1 可强制 */
   ...(process.env.AUTO_PLAN === undefined ? {} : { AUTO_PLAN: process.env.AUTO_PLAN }),
 });

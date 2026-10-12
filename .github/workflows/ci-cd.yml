@@ -6,7 +6,7 @@ on:
   pull_request:
 
 env:
-  IMAGE_NAME: claudecode-anvil
+  IMAGE_NAME: cco
 
 jobs:
   # ---------- CI: 测试 + 类型检查 + 构建（Linux / Windows 矩阵） ----------
@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: 安装依赖
+      - name: 干净安装（npm ci）
         run: npm ci
 
       - name: 类型检查
@@ -44,7 +44,7 @@ jobs:
       - name: 构建
         run: npm run build
 
-  # ---------- 依赖审计 ----------
+  # ---------- 依赖审计（硬门禁；若上游出现无法立即修复的 high 漏洞，改为 advisory 并在 README 说明） ----------
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -55,7 +55,7 @@ jobs:
       - name: 依赖审计
         run: npm audit --audit-level=high
 
-  # ---------- 打包 smoke：真实 npm pack → 隔离安装 → 全局命令可启动 ----------
+  # ---------- 打包 smoke：真实 npm pack → tarball 断言 → 隔离安装 → CLI 版本/帮助真实执行 ----------
   pack:
     runs-on: ubuntu-latest
     needs: test
@@ -66,33 +66,64 @@ jobs:
           node-version: 22
       - name: 安装依赖
         run: npm ci
-      - name: 打包 smoke（npm pack + 隔离安装 + 全局命令启动）
+      - name: 打包 smoke（npm pack + 产物断言 + 隔离安装 + CLI --version/--help）
         run: |
-          npm pack
-          TGZ=$(ls handrolled-claude-code-*.tgz | head -1)
+          set -euo pipefail
+          npm pack --silent
+          TGZ=$(ls nanlins-cco-*.tgz | head -1)
+          echo "tarball: $TGZ"
+
+          # 1) tarball 内容断言：发布包必须含编译产物/入口/许可证/清单
+          tar -tzf "$TGZ" | grep -qx 'package/dist/main.js'
+          tar -tzf "$TGZ" | grep -qx 'package/bin/anvil.js'
+          tar -tzf "$TGZ" | grep -qx 'package/LICENSE'
+          tar -tzf "$TGZ" | grep -qx 'package/package.json'
+          # 源码/测试不得进入发布包
+          if tar -tzf "$TGZ" | grep -q '^package/src/'; then echo "FAIL: src/ 不应进入发布包"; exit 1; fi
+          if tar -tzf "$TGZ" | grep -q '^package/tests/'; then echo "FAIL: tests/ 不应进入发布包"; exit 1; fi
+
+          # 2) 隔离安装
           mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
-          npm init -y >/dev/null 2>&1
-          npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null 2>&1
-          # 发布包必须带编译产物与全局入口
-          test -f node_modules/handrolled-claude-code/dist/main.js
-          test -f node_modules/handrolled-claude-code/bin/anvil.js
-          test -f node_modules/handrolled-claude-code/LICENSE
-          node --check node_modules/handrolled-claude-code/dist/main.js
-          # 全局命令可启动（无 TTY + EOF 应立即退出；124=已启动未退出也视为通过）
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
+          test -f node_modules/@nanlins/cco/dist/main.js
+          node --check node_modules/@nanlins/cco/dist/main.js
+
+          # 3) 真实执行 CLI 的版本/帮助命令（退出码 + 输出双断言）
+          out_version=$(node node_modules/.bin/anvil --version)
+          echo "version output: $out_version"
+          echo "$out_version" | grep -Eq '^cco [0-9]+\.[0-9]+\.[0-9]+ \(anvil\)$'
+          out_help=$(node node_modules/.bin/anvil --help)
+          echo "$out_help" | grep -q 'anvil --version'
+
+          # 4) 无 TTY + EOF：REPL 必须自行退出（0）；124 = 卡死未退出 → 失败
           set +e
-          timeout 30 node node_modules/.bin/anvil < /dev/null >/dev/null 2>&1
+          timeout 30 node node_modules/.bin/anvil < /dev/null > /tmp/anvil-eof.log 2>&1
           code=$?
           set -e
-          echo "anvil exit=${code}（124=启动后未退出，视为通过）"
-          test "$code" != "1"
+          if [ "$code" -ne 0 ]; then
+            echo "FAIL: anvil EOF 退出码 $code（期望 0，124=卡死）"
+            cat /tmp/anvil-eof.log
+            exit 1
+          fi
           echo "pack smoke OK"
 
-  # ---------- CD: 构建 Docker 镜像并推送 ----------
+  # ---------- docker compose 配置校验（不依赖真实 .env；哨兵密码只用于解析） ----------
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: |
+          POSTGRES_PASSWORD=ci-placeholder docker compose config --quiet
+          echo "docker compose config OK"
+
+  # ---------- CD: 构建 Docker 镜像（PR 与 main 都构建；推送镜像需配置 secrets 后启用注释段） ----------
   docker:
     runs-on: ubuntu-latest
     needs: test
-    # 只在 main 分支 push 且仓库存在 Dockerfile 时构建镜像（防止 Dockerfile 缺失时 CD 空转失败）
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && hashFiles('Dockerfile') != ''
+    # Dockerfile 缺失时跳过（防止 CD 空转失败）；构建不推送，无需仓库权限
+    if: hashFiles('Dockerfile') != ''
     steps:
       - uses: actions/checkout@v4
 
@@ -115,3 +146,6 @@ jobs:
 # 修改记录：
 #   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫，杜绝 Dockerfile 缺失时流水线空转失败（2026-08-07~09-21 曾发生）
 #   2026-10-03 test 增加 Linux/Windows 矩阵 + 测试覆盖率；新增 audit（npm audit）与 pack（npm pack smoke）作业
+#   2026-10-12 交付质量修复：镜像名 cco；pack smoke 改为 tarball 内容断言 + CLI --version/--help 真实执行 +
+#              EOF 退出码断言（移除 `test "$code" != "1"` 弱断言）；新增 compose（docker compose config）作业；
+#              docker build 覆盖 PR（不再仅 main push）

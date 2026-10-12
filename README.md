@@ -1,11 +1,14 @@
-Hand-rolled Claude Code
+# CCo（终端 Agent Harness）
 
 [![CI/CD](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/nanlins/CCo/actions/workflows/ci-cd.yml)
 
-> 从零构建的 Agent Harness 。
+> 从零构建的 Agent Harness —— 用 4 个里程碑复刻 Claude Code 的架构骨架。
 > 智能来自模型，Agent 产品 = 模型 + Harness。这个仓库是"造载具"的练习。
 
-零业务依赖（仅 `@anthropic-ai/sdk` + `dotenv`），TypeScript，`node:test` 测试，`MOCK=1` 离线可跑。
+> **命名规范**：仓库/产品名 `CCo`；npm 包 `@nanlins/cco`；CLI `anvil`（`小锤` 仅作文档化别名）；Docker 镜像 `cco`、容器 `cco-*`；本项目自研环境变量统一 `CCO_` 前缀（如 `CCO_MODEL_ID`），旧的无前缀名仍兼容读取但已 deprecated。
+
+运行时依赖 8 个（`@anthropic-ai/sdk` `dotenv` `ioredis` `pg` `pdfjs-dist` `proper-lockfile` `string-width` `zod`）；
+其中 Redis / PostgreSQL / pdf 均为可选能力，缺省零外部服务即可运行。TypeScript，`node:test` 测试，`MOCK=1` 离线可跑。
 
 ## 快速开始
 
@@ -50,7 +53,7 @@ anvil              # 或：小锤
 ```bash
 # 开发态（推荐）：改即生效，不依赖 dist
 npm start                  # tsx 直接跑 src/main.ts；Ctrl+C 退出
-ANVIL_USE_DIST=0 npm start # 等效
+CCO_USE_DIST=0 npm start   # 等效（旧名 ANVIL_USE_DIST 兼容）
 
 # 全局命令（任意目录启动）：
 npm link                   # 安装全局符号链接（package.json "prepare" 会自动 npm run build）
@@ -59,13 +62,13 @@ anvil                      # 或：小锤，工作区 = 当前目录
 
 **入口模式优先级**（`bin/anvil.js` 的 `resolveEntryMode`）：
 
-| 条件                          | 模式 | 行为                                                  |
-| ----------------------------- | ---- | ----------------------------------------------------- |
-| `dist/main.js` 缺失           | 源码 | 通过 tsx 跑 `src/main.ts`                             |
-| `ANVIL_USE_DIST=0`            | 源码 | 强制源码（跳过 mtime 比较）                           |
-| `ANVIL_USE_DIST=1`            | dist | 强制 dist（跳过 mtime 比较）                          |
-| 任一 `src/**/*.ts` 比 dist 新 | 源码 | 打印 `[anvil] dist 落后于 src，…` 告警，再跑 tsx 源码 |
-| dist 新于等于所有 src         | dist | 照常跑 `dist/main.js`                                 |
+| 条件                          | 模式 | 行为                                                    |
+| ----------------------------- | ---- | ------------------------------------------------------- |
+| `dist/main.js` 缺失           | 源码 | 通过 tsx 跑 `src/main.ts`                               |
+| `CCO_USE_DIST=0`              | 源码 | 强制源码（跳过 mtime 比较；旧名 `ANVIL_USE_DIST` 兼容） |
+| `CCO_USE_DIST=1`              | dist | 强制 dist（跳过 mtime 比较）                            |
+| 任一 `src/**/*.ts` 比 dist 新 | 源码 | 打印 `[anvil] dist 落后于 src，…` 告警，再跑 tsx 源码   |
+| dist 新于等于所有 src         | dist | 照常跑 `dist/main.js`                                   |
 
 > **告警场景**：当 `npm run build` 后 `src` 不变（dist ≥ src），无告警。修改 `src` 但忘记 build、直接 `anvil`，会收到橙色告警并自动回退源码——更新立刻可见，不会跑旧 dist。
 
@@ -85,8 +88,8 @@ anvil                      # 或：小锤，工作区 = 当前目录
 export ANTHROPIC_API_KEY=sk-xxx
 export MODEL_ID=deepseek-v4-flash
 
-# 2. 启动 Redis + PostgreSQL+pgvector
-docker-compose up -d
+# 2. 启动 Redis + PostgreSQL+pgvector（哨兵密码只用于 compose 解析；实际密码由 .env 注入）
+docker compose up -d
 
 # 3. 终端应用连接（.env）
 #    REDIS_URL=redis://localhost:6380
@@ -95,10 +98,10 @@ docker-compose up -d
 
 ### 端口映射
 
-| 服务       | 容器           | 宿主机端口 | 说明                                         |
-| ---------- | -------------- | ---------- | -------------------------------------------- |
-| PostgreSQL | anvil-postgres | `:15434`   | pgAdmin 连接用（避开本机 5432 / 保留端口段） |
-| Redis      | anvil-redis    | `:6380`    | 缓存/限流（避开 WSL Redis 6379）             |
+| 服务       | 容器         | 宿主机端口 | 说明                                         |
+| ---------- | ------------ | ---------- | -------------------------------------------- |
+| PostgreSQL | cco-postgres | `:15434`   | pgAdmin 连接用（避开本机 5432 / 保留端口段） |
+| Redis      | cco-redis    | `:6380`    | 缓存/限流（避开 WSL Redis 6379）             |
 
 > 镜像版本：PostgreSQL 用 `pgvector/pgvector:pg17`（带向量扩展），Redis 用 `redis:7-alpine`。
 > 容器间通过内部网络通信（`redis:6379` / `postgres:5432`），不受宿主机端口冲突影响。
@@ -106,11 +109,11 @@ docker-compose up -d
 ### 常用命令
 
 ```bash
-docker-compose up -d --build   # 构建 + 启动
-docker-compose logs -f anvil   # 查看应用日志
-docker-compose ps              # 查看状态
-docker-compose down            # 停止（保留数据卷）
-docker-compose down -v         # 停止 + 删除数据卷
+docker compose up -d --build   # 构建 + 启动
+docker compose logs -f         # 查看基础设施日志（应用日志在宿主机 REPL）
+docker compose ps              # 查看状态
+docker compose down            # 停止（保留数据卷）
+docker compose down -v         # 停止 + 删除数据卷
 ```
 
 ### 架构说明
@@ -122,7 +125,13 @@ docker-compose down -v         # 停止 + 删除数据卷
 
 ### CI/CD
 
-`.github/workflows/ci-cd.yml`：push/PR 时自动跑 `typecheck` → `lint` → `format:check` → `test` → `build` → `docker build`。
+`.github/workflows/ci-cd.yml` 的作业（push/PR 均触发）：
+
+- **test**（Linux/Windows 矩阵）：`npm ci` → `typecheck` → `lint` → `format:check` → `test` → 测试覆盖率 → `build`
+- **audit**：`npm audit --audit-level=high`（硬门禁）
+- **pack**：`npm pack` → tarball 内容断言 → 隔离安装 → 真实执行 CLI `--version`/`--help` → EOF 退出码断言
+- **compose**：`docker compose config`（哨兵密码，不依赖真实 .env）
+- **docker**：`docker build` 产出镜像（PR 与 main 都构建，不推送）
 
 ## 4 个里程碑（本仓库全部实现）
 
@@ -183,7 +192,7 @@ docker-compose down -v         # 停止 + 删除数据卷
   TTY 下每 3s 刷新状态行；Ctrl+C 中止当前 LLM 流并保存部分状态。
 - **配额中断保活**：`Insufficient Balance`/`quota`/429 重试耗尽等配额类错误被捕获后保存 checkpoint，
   输出结构化中断报告（已完成/未完成/证据/风险 + 友好错误转译），REPL 保持存活可 `/resume`/`/export`/重试。
-- **.env 分层加载**：真实环境变量 > 工作区 .env（HARNESS_CWD）> 项目 cwd .env；
+- **.env 分层加载**：真实环境变量 > 工作区 .env（CCO_CWD，旧名 HARNESS_CWD 兼容）> 项目 cwd .env；
   修复 anvil 全局命令下 `/model` `/apikey` `/baseurl` 写入工作区 .env 后重启不生效的问题。
 - **记忆 Dream**：consolidate 四层门控（时间间隔 / 条目阈值 / 会话 / 文件锁），LLM 去重合并矛盾记忆。
 - **任务高水位标**：`.highwatermark` 顺序 ID，删除任务后 ID 不重用。
@@ -212,7 +221,7 @@ docker-compose down -v         # 停止 + 删除数据卷
 - **Plugin 市场**：PluginMarket 支持本地 plugin 发现/安装/卸载（skills/ 目录扫描），已接入 `/plugins` `/plugin-install` `/plugin-uninstall`
 - **AST 级命令分析**：commandAnalyzer 解析 bash 命令结构（管道/重定向/子shell/链接），识别危险模式，判断命令意图
 - **终端主题**：深色青蓝 ANSI 主题 + 像素锤子吉祥物（SVG 矢量 logo 见 `assets/anvil.svg`）；Markdown 流式渲染 + 代码块语法高亮 + 长输出分页
-- **多语言 i18n**：中英文切换（`ANVIL_LANG` 启动设置 / `/lang` 运行时切换，REPL 界面文案已接入）
+- **多语言 i18n**：中英文切换（`CCO_LANG` 启动设置 / `/lang` 运行时切换，REPL 界面文案已接入）
 
 ## 架构总览
 
@@ -229,6 +238,9 @@ docker-compose down -v         # 停止 + 删除数据卷
 
 ## 配置（.env）
 
+> 命名规范：所有本项目自研变量均支持 `CCO_` 前缀（推荐新名，如 `CCO_MODEL_ID`）；下表为便于阅读沿用简写，
+> 简写即为 legacy 名，仍被兼容读取但已 **deprecated**（下一主版本移除）。外部协议标准变量（`ANTHROPIC_*` / `OPENAI_*`）保持原名。
+
 | 变量                                                               | 说明                                                                             | 默认                        |
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------- | --------------------------- |
 | `ANTHROPIC_API_KEY`                                                | API key（缺省时自动进入 MOCK 模式）                                              | —                           |
@@ -244,7 +256,8 @@ docker-compose down -v         # 停止 + 删除数据卷
 | `WEB_ALLOWED_HOSTS`                                                | web 抓取公网白名单（逗号分隔），非空时仅放行名单内主机                           | —                           |
 | `LLM_PROTOCOL`                                                     | `anthropic`（默认）/ `openai`（OpenAI 兼容 Chat Completions）                    | `anthropic`                 |
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY`                               | OpenAI 兼容端点（`LLM_PROTOCOL=openai` 时）                                      | —                           |
-| `ANVIL_LANG`                                                       | 界面语言 `zh` / `en`（运行时 `/lang` 切换）                                      | `zh`                        |
+| `CCO_LANG`                                                         | 界面语言 `zh` / `en`（运行时 `/lang` 切换；旧名 `ANVIL_LANG` 兼容）              | `zh`                        |
+| `CCO_CWD`                                                          | 工作区目录（anvil 全局命令自动设置；旧名 `HARNESS_CWD` 兼容）                    | 当前目录                    |
 | `REDIS_URL`                                                        | Redis 连接（工具缓存+限流+会话状态）                                             | —                           |
 | `VECTOR_STORE`                                                     | 向量存储：`memory` / `pg`                                                        | `memory`                    |
 | `PG_CONNECTION_STRING`                                             | PostgreSQL 连接（pgvector），端口需与 docker-compose 一致（15434）               | —                           |
@@ -267,7 +280,7 @@ docker-compose down -v         # 停止 + 删除数据卷
 
 ## REPL 命令
 
-`/help` `/clear` `/tools` `/config` `/compact` `/tasks` `/memory` `/team` `/mode [ask|auto|deny|bypass]` `/model [模型ID]` `/apikey [sk-xxx]` `/baseurl [url]` `/protocol [anthropic|openai]` `/resume` `/sessions` `/session-delete` `/export [md|json] [路径]` `/plugins` `/plugin-install` `/plugin-uninstall` `/usage` `/lang [zh|en]` `/exit`
+`/help` `/clear` `/tools` `/config` `/compact` `/goal` `/tasks` `/memory` `/team` `/mode [ask|auto|deny|bypass]` `/model [模型ID]` `/apikey [sk-xxx]` `/baseurl [url]` `/protocol [anthropic|openai]` `/resume` `/sessions` `/session-delete` `/export [md|json] [路径]` `/plugins` `/plugin-install` `/plugin-uninstall` `/usage` `/lang [zh|en]` `/exit`
 
 `/apikey` `/baseurl` `/protocol` 修改后会**立即重建 LLM 实例**（冷启动无 key 进入 MOCK 后，配置 key 无需重启即可切换真实模型）；`/config` 显示完整且脱敏的协议/端点/模型/key。
 
@@ -373,6 +386,10 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
 - [架构文档](docs/architecture.md)：设计哲学、模块数据流、权限/压缩管线、多 Agent、MCP、可观测性
 - [Prompt 设计说明](docs/prompt-design.md)：Prompt 结构、Few-shot 使用、输出格式控制、失败处理、4 个修改前后效果对比
 - [RAG 与 pgvector](docs/rag-pgvector.md)：向量检索架构、PostgreSQL 部署、表设计（HNSW/JSONB/全文检索/事务/锁）
+- [运维手册](docs/ops-runbook.md)：前置条件、安装、启动/停止、健康检查、日志/数据/端口、常见故障、回滚
+- [失败模式](docs/failure-modes.md)：LLM/Redis/PG/持久化/Hook/MCP 失败路径的用户可见行为、日志字段、数据影响、恢复方式与测试覆盖
+- [已验证结论](docs/verified-claims.md)：README/文档中每个数字的验证命令、环境、commit SHA 与日期
+- [交付自审清单](docs/review-checklist.md)：发布/提交前的自审检查项
 
 ## 评估与安全
 
@@ -409,3 +426,8 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
 - 2026-10-02：postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）
 
 - 2026-10-03：移除硬编码数据库密码（改环境变量注入）；新增终端主题（truecolor/16色/NO_COLOR 四级降级）、项目指令加载（ANVIL.md/CLAUDE.md/AGENTS.md）、外部 hook 加载、工作流运行时与目标裁判
+
+- 2026-10-12：交付质量修复——命名统一（仓库 CCo / npm 包 `@nanlins/cco` / 镜像 `cco` / 容器 `cco-*` / 环境变量 `CCO_` 前缀且旧名兼容）；
+  README 依赖声明改为真实列表；CI 增加 `docker compose config`、pack smoke 改为真实断言 + CLI `--version`/`--help`；
+  新增 `--version`/`--help` CLI 元命令；新增运维手册/失败模式/已验证结论/自审清单文档。
+  完整验证记录见 `docs/verified-claims.md`。

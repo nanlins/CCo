@@ -1,6 +1,6 @@
 /**
  * i18n 多语言支持 —— 中英文切换。
- * 启动时读取 ANVIL_LANG（zh|en），运行时用 /lang 命令切换（见 main.ts）。
+ * 启动时读取 CCO_LANG（zh|en；旧名 ANVIL_LANG 兼容但 deprecated），运行时用 /lang 命令切换（见 main.ts）。
  */
 
 export type Locale = 'zh' | 'en';
@@ -66,7 +66,7 @@ const messages: Record<Locale, Record<string, string>> = {
   },
 };
 
-const envLocale = (process.env.ANVIL_LANG ?? '').toLowerCase();
+const envLocale = (process.env.CCO_LANG ?? process.env.ANVIL_LANG ?? '').toLowerCase();
 let currentLocale: Locale = envLocale === 'en' ? 'en' : 'zh';
 
 export function setLocale(locale: Locale): void {

@@ -6,7 +6,8 @@
  *   - 用户拒绝确认 → 不加载；
  *   - 用户确认 → 加载并持久化信任；再次加载不再询问；
  *   - hooks.json 内容变化 → 指纹失效，需重新确认；
- *   - 已信任 hook 可端到端触发执行。
+ *   - 已信任 hook 可端到端触发执行；
+ *   - hook 命令失败（非零退出）→ 不阻断，trigger 返回 undefined。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,14 +19,11 @@ import { loadProjectHooks } from '../src/core/hookLoader.js';
 
 const HOOK_CMD = `node -e "console.log(JSON.stringify({block:true,message:'from hook'}))"`;
 
-function setup(): { ws: string; trustDir: string; cleanup: () => void } {
+function setup(command: string = HOOK_CMD): { ws: string; trustDir: string; cleanup: () => void } {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hook-ws-'));
   const trustDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hook-trust-'));
   fs.mkdirSync(path.join(ws, '.anvil'), { recursive: true });
-  fs.writeFileSync(
-    path.join(ws, '.anvil', 'hooks.json'),
-    JSON.stringify({ Stop: [{ type: 'command', command: HOOK_CMD }] }),
-  );
+  fs.writeFileSync(path.join(ws, '.anvil', 'hooks.json'), JSON.stringify({ Stop: [{ type: 'command', command }] }));
   return {
     ws,
     trustDir,
@@ -116,6 +114,19 @@ test('P2-2: 已信任 hook 可端到端触发执行', async () => {
     const r = await reg.trigger('Stop', { messagesCount: 1 });
     assert.equal(r?.block, true);
     assert.equal(r?.message, 'from hook');
+  } finally {
+    cleanup();
+  }
+});
+
+test('P2-2: hook 命令失败（非零退出）→ 不阻断，trigger 返回 undefined', async () => {
+  const { ws, trustDir, cleanup } = setup(`node -e "process.exit(1)"`);
+  try {
+    const reg = new HookRegistry();
+    await loadProjectHooks(reg, ws, () => {}, { trustDir, confirmProject: async () => true });
+    assert.equal(reg.list('Stop').length, 1, 'hook 已注册');
+    const r = await reg.trigger('Stop', { messagesCount: 1 });
+    assert.equal(r, undefined, '命令失败时 hook 结果视为空，不阻断主循环');
   } finally {
     cleanup();
   }

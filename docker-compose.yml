@@ -1,27 +1,26 @@
-# 手搓 Claude Code (Anvil) - Docker Compose 编排（基础设施版）
+# CCo (anvil) - Docker Compose 编排（基础设施版）
 #
 # 终端版应用运行在宿主机（npm start / anvil），Docker 只提供基础设施：
 #   Redis（缓存+限流） + PostgreSQL(pgvector)（向量/业务存储）
 #
 # 端口说明（避开本机已有的 WSL Redis:6379 / 本地 PostgreSQL:5432）：
-#   redis    :6380  宿主机访问（容器内部 redis:6379）
+#   redis    :6380   宿主机访问（容器内部 redis:6379）
 #   postgres :15434  宿主机访问（容器内部 postgres:5432；15434 避开 Windows 保留端口段）
 #
 # 用法：
-#   docker-compose up -d          # 启动 redis + postgres
-#   docker-compose down           # 停止
+#   docker compose up -d          # 启动 redis + postgres
+#   docker compose down           # 停止
 #
 # 终端应用连接（.env）：
 #   REDIS_URL=redis://localhost:6380
 #   PG_CONNECTION_STRING=postgres://postgres:<你的密码>@localhost:15434/ai_agent
-
-version: '3.8'
+#   （自研变量均支持 CCO_ 前缀新名：CCO_REDIS_URL / CCO_PG_CONNECTION_STRING；旧名仍兼容）
 
 services:
   # ---------- Redis（缓存+限流） ----------
   redis:
     image: redis:7-alpine
-    container_name: anvil-redis
+    container_name: cco-redis
     ports:
       - '6380:6379' # 宿主机 6380（避免与 WSL Redis 6379 冲突）
     volumes:
@@ -34,12 +33,12 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - anvil-net
+      - cco-net
 
   # ---------- PostgreSQL + pgvector（向量存储） ----------
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: anvil-postgres
+    container_name: cco-postgres
     ports:
       - '15434:5432' # 宿主机 15434（避开本地 PostgreSQL 5432 与 Windows 保留端口段 5402-5501）
     environment:
@@ -56,16 +55,17 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - anvil-net
+      - cco-net
 
 volumes:
   redis_data:
   postgres_data:
 
 networks:
-  anvil-net:
+  cco-net:
     driver: bridge
 # docker-compose：Redis+PostgreSQL 基础设施编排
 # 修改记录：
 #   2026-10-02 postgres 宿主端口 5434→15434（避开 Windows 保留端口段 5402-5501）
-#   2026-10-03 POSTGRES_PASSWORD 改为 \ 环境变量注入（移除硬编码 491220）
+#   2026-10-03 POSTGRES_PASSWORD 改为环境变量注入（移除硬编码）
+#   2026-10-12 命名统一：容器 cco-redis/cco-postgres、网络 cco-net；移除已废弃的 version 字段

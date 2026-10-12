@@ -18,10 +18,16 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const NANOCLAW = process.env.NANOCLAW_PATH ?? 'D:/gitcode/识++练/比特-项目/综合实战 手搓 OpenClaw/nanoclaw';
+/* 不内置任何本机绝对路径：必须显式提供 NANOCLAW_PATH，否则 SKIP（带原因）。 */
+const NANOCLAW = process.env.NANOCLAW_PATH;
 
 if (!process.env.OPENAI_API_KEY) {
   console.error('SKIP: 需要环境变量 OPENAI_API_KEY（DeepSeek v4 flash 端点密钥，只通过环境变量传入）');
+  process.exit(2);
+}
+
+if (!NANOCLAW) {
+  console.error('SKIP: 需要环境变量 NANOCLAW_PATH 指向本机 nanoclaw 源码目录（本验收不内置绝对路径）。');
   process.exit(2);
 }
 
@@ -44,7 +50,7 @@ Object.assign(process.env, {
   MAX_TOOL_CALLS_PER_RUN: process.env.MAX_TOOL_CALLS_PER_RUN ?? '30',
   MAX_RUN_INPUT_TOKENS: process.env.MAX_RUN_INPUT_TOKENS ?? '120000',
   MAX_LLM_CALLS_PER_RUN: process.env.MAX_LLM_CALLS_PER_RUN ?? '15',
-  HARNESS_CWD: NANOCLAW,
+  CCO_CWD: NANOCLAW,
 });
 
 const { createHarness } = await import('../../src/main.js');

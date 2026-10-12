@@ -1,16 +1,18 @@
 /**
- * P1 回归：入口选择器 resolveEntryMode / latestSrcMtime（消除 dist 陈旧脚枪）。
+ * P1 回归：入口选择器 resolveEntryMode / latestSrcMtime（消除 dist 陈旧脚枪）+
+ * CLI 元命令（--version / --help 真实可执行）。
  *
  * 每条用例使用临时目录与精确 mtime 模拟三条路径：
  *   - src 新于 dist → 源码模式 + 告警
  *   - dist 新于等于 src → dist 模式
- *   - ANVIL_USE_DIST=0/1 强制覆盖
+ *   - CCO_USE_DIST=0/1 强制覆盖（旧名 ANVIL_USE_DIST 兼容）
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { resolveEntryMode, latestSrcMtime } from '../bin/anvil.js';
 
 /** 在 root 下建 src/sub/a.ts 和 dist/main.js 并设精确 mtime。 */
@@ -66,7 +68,29 @@ test('dist 与 src 同时 → dist 模式', () => {
   }
 });
 
-test('ANVIL_USE_DIST=0 强制源码', () => {
+test('CCO_USE_DIST=0 强制源码', () => {
+  const now = Date.now();
+  const { root, cleanup } = setup(now - 60_000, now);
+  try {
+    const r = resolveEntryMode(root, { CCO_USE_DIST: '0' });
+    assert.equal(r.mode, 'src');
+  } finally {
+    cleanup();
+  }
+});
+
+test('CCO_USE_DIST=1 强制 dist', () => {
+  // dist 不存在也应强制走 dist 路径（启动时 node dist/main.js 会报错但那是预期）
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-entry-2-'));
+  try {
+    const r = resolveEntryMode(root, { CCO_USE_DIST: '1' });
+    assert.equal(r.mode, 'dist');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('旧名 ANVIL_USE_DIST 仍兼容（deprecated）', () => {
   const now = Date.now();
   const { root, cleanup } = setup(now - 60_000, now);
   try {
@@ -77,14 +101,14 @@ test('ANVIL_USE_DIST=0 强制源码', () => {
   }
 });
 
-test('ANVIL_USE_DIST=1 强制 dist', () => {
-  // dist 不存在也应强制走 dist 路径（启动时 node dist/main.js 会报错但那是预期）
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-entry-2-'));
+test('CCO_USE_DIST 优先于 ANVIL_USE_DIST（新名覆盖旧名）', () => {
+  const now = Date.now();
+  const { root, cleanup } = setup(now - 60_000, now);
   try {
-    const r = resolveEntryMode(root, { ANVIL_USE_DIST: '1' });
+    const r = resolveEntryMode(root, { CCO_USE_DIST: '1', ANVIL_USE_DIST: '0' });
     assert.equal(r.mode, 'dist');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    cleanup();
   }
 });
 
@@ -128,4 +152,21 @@ test('latestSrcMtime: 无 .ts 文件 → 0', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('CLI --version / --help 真实可执行（供 pack smoke 与运维自检）', () => {
+  const run = (arg: string): { status: number | null; stdout: string } => {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'src/main.ts', arg], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? '' };
+  };
+  const v = run('--version');
+  assert.equal(v.status, 0, `--version 退出码应为 0，实际 ${v.status}`);
+  assert.match(v.stdout.trim(), /^cco \d+\.\d+\.\d+ \(anvil\)$/);
+  const h = run('--help');
+  assert.equal(h.status, 0, `--help 退出码应为 0，实际 ${h.status}`);
+  assert.match(h.stdout, /anvil --version/);
 });

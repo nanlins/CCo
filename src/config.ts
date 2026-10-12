@@ -6,7 +6,7 @@
  *
  * .env 分层加载优先级（高 → 低）：
  *   1. 真实环境变量（shell 已导出的永远最高，不被任何 .env 覆盖）
- *   2. 工作区 .env（HARNESS_CWD/.env —— /apikey /model /baseurl 运行时写入这里）
+ *   2. 工作区 .env（CCO_CWD/.env —— /apikey /model /baseurl 运行时写入这里）
  *   3. 进程 cwd .env（项目根传统位置）
  * 这样修复了"anvil 全局命令下 /model /apikey 写入工作区 .env 但重启不生效"的问题
  * （此前只读 process.cwd()/.env，而 anvil 的 cwd 是项目根、工作区是用户目录）。
@@ -18,7 +18,7 @@ import type { PermissionMode } from './types.js';
 
 /**
  * 分层加载 .env：真实环境变量最高优先，其次工作区 .env，最后 cwd .env。
- * 参数可注入（测试用）；默认工作区 = HARNESS_CWD ?? process.cwd()。
+ * 参数可注入（测试用）；默认工作区 = CCO_CWD ?? HARNESS_CWD（旧名，deprecated）?? process.cwd()。
  */
 export function loadDotenvLayered(workspaceDir?: string, cwdDir?: string): void {
   /* 捕获加载任何 .env 之前就已存在的环境变量（真实 shell 环境），这些永不被覆盖 */
@@ -39,7 +39,7 @@ export function loadDotenvLayered(workspaceDir?: string, cwdDir?: string): void 
   };
 
   const cwdEnv = path.join(cwdDir ?? process.cwd(), '.env');
-  const wsResolved = path.resolve(workspaceDir ?? process.env.HARNESS_CWD ?? process.cwd());
+  const wsResolved = path.resolve(workspaceDir ?? workspaceDirEnv() ?? process.cwd());
   const workspaceEnv = path.join(wsResolved, '.env');
 
   /* 先加载低优先级（cwd），再加载高优先级（工作区，允许覆盖前者设置的键） */
@@ -134,31 +134,45 @@ export interface AppConfig {
   planMaxSteps?: number;
 }
 
+/**
+ * 环境变量读取（命名规范）：
+ * 本项目自研变量统一以 `CCO_` 为前缀（如 `CCO_MODEL_ID`）；旧的无前缀名仍被兼容读取
+ * （deprecated，下一主版本移除）。外部协议标准变量（`ANTHROPIC_*` / `OPENAI_*`）不受影响。
+ */
+function rawEnv(name: string): string | undefined {
+  return process.env[`CCO_${name}`] ?? process.env[name];
+}
+
+/** 工作区目录：CCO_CWD（主名）→ HARNESS_CWD（旧名，deprecated）→ undefined。 */
+function workspaceDirEnv(): string | undefined {
+  return process.env.CCO_CWD || process.env.HARNESS_CWD || undefined;
+}
+
 function envStr(name: string, fallback = ''): string {
-  const v = process.env[name];
+  const v = rawEnv(name);
   return v === undefined || v === '' ? fallback : v;
 }
 
 function envBool(name: string): boolean {
-  return ['1', 'true', 'yes'].includes((process.env[name] ?? '').toLowerCase());
+  return ['1', 'true', 'yes'].includes((rawEnv(name) ?? '').toLowerCase());
 }
 
 /** 三态布尔：未设置返回 undefined（交由调用方区分"显式关"与"启发式"）。 */
 function envBoolOrUndefined(name: string): boolean | undefined {
-  const raw = process.env[name];
+  const raw = rawEnv(name);
   if (raw === undefined || raw === '') return undefined;
   return ['1', 'true', 'yes'].includes(raw.toLowerCase());
 }
 
 function envInt(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
+  const n = Number(rawEnv(name));
   /* 接受 0 与负数：0=不限制、负数=禁用（语义见 normalizeBudgetLimit） */
   return Number.isFinite(n) ? n : fallback;
 }
 
 /** 未设置返回 undefined（交给调用方用默认值）；设置了则接受 0 与负数。 */
 function envIntOrUndefined(name: string): number | undefined {
-  const raw = process.env[name];
+  const raw = rawEnv(name);
   if (raw === undefined || raw === '') return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
@@ -192,7 +206,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxTokens: overrides.maxTokens ?? envInt('MAX_TOKENS', 8192),
     compactThresholdChars: overrides.compactThresholdChars ?? envInt('COMPACT_THRESHOLD_CHARS', 50000),
     maxToolOutputChars: overrides.maxToolOutputChars ?? envInt('MAX_TOOL_OUTPUT_CHARS', 50000),
-    workspaceDir: path.resolve(overrides.workspaceDir ?? envStr('HARNESS_CWD', process.cwd())),
+    workspaceDir: path.resolve(overrides.workspaceDir ?? workspaceDirEnv() ?? process.cwd()),
     mock: overrides.mock ?? envBool('MOCK'),
     temperature: overrides.temperature ?? envFloat('TEMPERATURE'),
     topP: overrides.topP ?? envFloat('TOP_P'),
@@ -238,12 +252,12 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 }
 
 function envFloat(name: string): number | undefined {
-  const n = Number(process.env[name]);
+  const n = Number(rawEnv(name));
   return Number.isFinite(n) ? n : undefined;
 }
 
 function envList(name: string): string[] | undefined {
-  const raw = process.env[name];
+  const raw = rawEnv(name);
   if (!raw) return undefined;
   return raw
     .split(',')
@@ -253,7 +267,7 @@ function envList(name: string): string[] | undefined {
 
 /** PATH 风格分隔符（Windows ';' / POSIX ':'）列表，解析为绝对路径。 */
 function envPathList(name: string): string[] {
-  const raw = process.env[name];
+  const raw = rawEnv(name);
   if (!raw) return [];
   return raw
     .split(path.delimiter)

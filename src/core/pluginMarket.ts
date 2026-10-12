@@ -102,7 +102,10 @@ export class PluginMarket {
   }
 
   /** 远程 registry 环境变量（指向 JSON 索引）。 */
-  static readonly REGISTRY_ENV = 'ANVIL_PLUGIN_REGISTRY';
+  static readonly REGISTRY_ENV = 'CCO_PLUGIN_REGISTRY';
+
+  /** 旧环境变量名（deprecated，仍被兼容读取）。 */
+  static readonly LEGACY_REGISTRY_ENV = 'ANVIL_PLUGIN_REGISTRY';
 
   /** 目标是否位于目录内（防路径穿越）。 */
   private static insideDir(root: string, target: string): boolean {
@@ -111,8 +114,8 @@ export class PluginMarket {
   }
 
   private registryUrl(): string | undefined {
-    const url = process.env[PluginMarket.REGISTRY_ENV]?.trim();
-    return url || undefined;
+    const raw = process.env[PluginMarket.REGISTRY_ENV]?.trim() ?? process.env[PluginMarket.LEGACY_REGISTRY_ENV]?.trim();
+    return raw || undefined;
   }
 
   /** 远程 registry 状态（供 /plugins /plugin-search 展示，避免"看起来能用"的死入口）。 */

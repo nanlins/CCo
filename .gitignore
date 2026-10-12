@@ -17,9 +17,15 @@ dist/
 .audit/
 .vector_index/
 .mcp/
+.workflow/
 
-# 日志
+# 日志与探针/临时验证残留（防止误提交）
 *.log
+probe.txt
+leakproof.txt
+.realbiz/
+real-biz/
+demo-app/
 
 # 临时测试/打包产物
 test_*.mts

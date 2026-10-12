@@ -28,7 +28,7 @@ Object.assign(process.env, {
   PERMISSION_MODE: process.env.PERMISSION_MODE ?? 'auto',
   MAX_TOOL_CALLS_PER_RUN: process.env.MAX_TOOL_CALLS_PER_RUN ?? '12',
   MAX_LLM_CALLS_PER_RUN: process.env.MAX_LLM_CALLS_PER_RUN ?? '16',
-  HARNESS_CWD: FIXTURE,
+  CCO_CWD: FIXTURE,
 });
 
 const { createHarness } = await import('../../src/main.js');
