@@ -12,7 +12,9 @@ import { PluginMarket } from '../src/core/pluginMarket.js';
 const WD = process.cwd();
 
 test('P0-1: PowerShell 只读 cmdlet 越界读工作区外 → deny', () => {
-  const r = classifyShellCommand('Get-Content C:\\Windows\\win.ini', WD);
+  /* 越界目标按平台选取：Windows 盘符路径 / POSIX /etc（cmdlet 名称识别本身与平台无关） */
+  const target = process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/hosts';
+  const r = classifyShellCommand(`Get-Content ${target}`, WD);
   assert.equal(r.verdict, 'deny');
 });
 

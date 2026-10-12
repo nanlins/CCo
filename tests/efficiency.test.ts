@@ -135,9 +135,11 @@ test('结构化错误：失败命令返回 exit code + Hint（模型可一次修
   }
 });
 
-test('formatShellError: Windows 常见失败模式给出针对性 Hint', () => {
-  const out = formatShellError('Get-Foo', 1, "'Get-Foo' is not recognized as an internal or external command");
-  assert.ok(out.includes('powershell') || out.includes('PowerShell'), '应提示 shell 差异');
+test('formatShellError: 常见失败模式给出针对性 Hint（Windows 分支仅 win32 断言）', () => {
+  if (process.platform === 'win32') {
+    const out = formatShellError('Get-Foo', 1, "'Get-Foo' is not recognized as an internal or external command");
+    assert.ok(out.includes('powershell') || out.includes('PowerShell'), '应提示 shell 差异');
+  }
   const out2 = formatShellError('cat x', 1, 'permission denied');
   assert.ok(out2.includes('sudo') || out2.includes('权限'), '应提示权限处理');
 });
