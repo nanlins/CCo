@@ -8,7 +8,8 @@
  * 入口选择策略（resolveEntryMode）：
  *   - dist/main.js 缺失 → 回退源码（tsx）；
  *   - src 目录任一 .ts 文件比 dist/main.js 新 → 回退源码并告警；
- *   - ANVIL_USE_DIST=0 强制源码；ANVIL_USE_DIST=1 强制 dist（跳过 mtime）。
+ *   - CCO_USE_DIST=0 强制源码；CCO_USE_DIST=1 强制 dist（跳过 mtime）；
+ *     旧名 ANVIL_USE_DIST 仍兼容（deprecated）。
  */
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -58,9 +59,10 @@ export function latestSrcMtime(srcDir, _fs = fs) {
  * @returns {{ mode: 'dist' | 'src'; warning?: string }}
  */
 export function resolveEntryMode(projectRoot, env, _fs = fs) {
-  /* 用户显式强制 */
-  if (env.ANVIL_USE_DIST === '0') return { mode: 'src' };
-  if (env.ANVIL_USE_DIST === '1') return { mode: 'dist' };
+  /* 用户显式强制：CCO_USE_DIST（新名）优先，ANVIL_USE_DIST（旧名，deprecated）兼容 */
+  const forced = env.CCO_USE_DIST ?? env.ANVIL_USE_DIST;
+  if (forced === '0') return { mode: 'src' };
+  if (forced === '1') return { mode: 'dist' };
 
   const distEntry = path.join(projectRoot, 'dist', 'main.js');
   const distExists = (() => {
@@ -114,14 +116,19 @@ function runCli() {
   const entry =
     mode === 'dist' ? path.join(PROJECT_ROOT, 'dist', 'main.js') : path.join(PROJECT_ROOT, 'src', 'main.ts');
 
-  const child = spawn(process.execPath, mode === 'dist' ? [entry] : ['--import', 'tsx', entry], {
-    cwd: PROJECT_ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      HARNESS_CWD: userCwd,
+  const child = spawn(
+    process.execPath,
+    [...(mode === 'dist' ? [entry] : ['--import', 'tsx', entry]), ...process.argv.slice(2)],
+    {
+      cwd: PROJECT_ROOT,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        /* 工作区 = 调用目录；CCO_CWD 为主名（config.ts 兼容旧名 HARNESS_CWD） */
+        CCO_CWD: userCwd,
+      },
     },
-  });
+  );
 
   child.on('exit', (code, signal) => {
     if (signal) process.kill(process.pid, signal);

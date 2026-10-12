@@ -11,6 +11,7 @@
  *   M4 协作与生产化    → tasks / background / cron / teams / worktree / MCP + AuditLog
  */
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, type AppConfig } from './config.js';
 import { AnthropicLlm, type LlmClient } from './llm/client.js';
 import { OpenAiLlm } from './llm/openai.js';
@@ -617,7 +618,40 @@ async function runWorkflowSpec(harness: Harness, specRaw: string): Promise<strin
   ].join('\n');
 }
 
+/** 读取当前包版本（dist/main.js 与 src/main.ts 都位于 <root>/{dist,src}/，上一级即 package.json）。 */
+function readPackageVersion(): string {
+  try {
+    const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const CLI_USAGE = `CCo (anvil) — terminal Agent Harness
+
+用法:
+  anvil                启动 REPL（工作区 = 当前目录）
+  anvil --version      打印版本
+  anvil --help         显示本帮助
+
+常用:
+  MOCK=1 anvil         离线演示（无需 API key）
+  npm start            开发态（tsx 直接跑 src）
+  配置见 README「配置（.env）」；自研环境变量统一 CCO_ 前缀（旧名兼容）。`;
+
 async function main(): Promise<void> {
+  /* CLI 元命令：版本/帮助（不启动 REPL；供 npm pack smoke 与运维自检使用） */
+  const cliArgs = process.argv.slice(2);
+  if (cliArgs.includes('--version') || cliArgs.includes('-v')) {
+    console.log(`cco ${readPackageVersion()} (anvil)`);
+    return;
+  }
+  if (cliArgs.includes('--help') || cliArgs.includes('-h')) {
+    console.log(CLI_USAGE);
+    return;
+  }
   const harness = createHarness();
   const activeKey = harness.config.llmProtocol === 'openai' ? harness.config.openaiApiKey : harness.config.apiKey;
   const needsConfig = !activeKey && !harness.config.mock;
