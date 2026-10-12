@@ -33,7 +33,9 @@ test('extractRedirectTargets: 提取写重定向目标（引号外）', () => {
 test('classifyShellCommand: 重定向目标越出工作区 → deny', () => {
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cls-'));
   try {
-    for (const cmd of ['echo INJECTED > ..\\pwn.txt', 'echo x > ../pwn.txt', 'ls > C:\\temp\\out.txt']) {
+    /* Windows 用盘符绝对路径；POSIX 用 /tmp 绝对路径（各自平台语义下的"工作区外"） */
+    const outside = process.platform === 'win32' ? 'ls > C:\\temp\\out.txt' : 'ls > /tmp/cc-cls-out.txt';
+    for (const cmd of ['echo INJECTED > ..\\pwn.txt', 'echo x > ../pwn.txt', outside]) {
       const cls = classifyShellCommand(cmd, workdir);
       assert.equal(cls.verdict, 'deny', `${cmd} 应 deny，实际 ${cls.verdict} (${cls.reason})`);
     }

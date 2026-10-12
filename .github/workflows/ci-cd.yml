@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           npm pack --silent
-          TGZ=$(ls nanlins-cco-*.tgz | head -1)
+          TGZ=$(find . -maxdepth 1 -name 'nanlins-cco-*.tgz' -print -quit)
           echo "tarball: $TGZ"
 
           # 1) tarball 内容断言：发布包必须含编译产物/入口/许可证/清单
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 构建 Docker 镜像
-        run: docker build -t $IMAGE_NAME:${{ github.sha }} -t $IMAGE_NAME:latest .
+        run: docker build -t "$IMAGE_NAME:${{ github.sha }}" -t "$IMAGE_NAME:latest" .
 
       # 如需推送到 Docker Hub / GHCR，配置 secrets 后取消注释
       # - name: 登录 GHCR
@@ -149,10 +149,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.12
-        with:
-          args: -color
+      - name: actionlint（显式指定工作目录与路径，避免 docker:// action 的 cwd 差异）
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color .github/workflows
 
 # 修改记录：
 #   2026-09-29 docker job 增加 hashFiles('Dockerfile') 守卫（⚠ 该写法非法，见 2026-10-12 修复）

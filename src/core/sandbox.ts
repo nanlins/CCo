@@ -89,7 +89,13 @@ export function shellErrorHints(command: string, output: string): string[] {
       hints.push('Windows 路径含空格/反斜杠时建议整体加双引号，例如 node "my dir\\script.js"。');
     }
   } else {
-    if (out.includes('command not found') || out.includes('no such file')) {
+    /* POSIX：sh 的 "not found"、node 的 "Cannot find module"、常见 "No such file" 都算文件/命令缺失 */
+    if (
+      out.includes('command not found') ||
+      out.includes('no such file') ||
+      out.includes('not found') ||
+      out.includes('cannot find')
+    ) {
       hints.push('命令或文件未找到：先确认路径与可执行文件存在（可用 which/ls）。');
     }
   }
