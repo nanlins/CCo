@@ -432,3 +432,8 @@ docs/             架构文档 / prompt-design（Prompt 设计说明与效果对
   README 依赖声明改为真实列表；CI 增加 `docker compose config`、pack smoke 改为真实断言 + CLI `--version`/`--help`；
   新增 `--version`/`--help` CLI 元命令；新增运维手册/失败模式/已验证结论/自审清单文档。
   完整验证记录见 `docs/verified-claims.md`。
+
+- 2026-10-12（CI 根因修复）：CI 自 2026-09-30 起连续全红，根因为 job 级 `if: hashFiles(...)`（该函数仅允许
+  step 级使用，GitHub 判定整个 workflow 无效 → 每次 push 创建 0 job 的失败 run）。已移除该写法并新增
+  `workflow-lint`（actionlint）门禁；随后真实 CI 暴露的 Linux 测试平台假设与 pack 的 SIGPIPE 陷阱（pipefail +
+  `tar | grep -q`）一并在本机 WSL/容器复现并修复。run #25 起 7/7 jobs 全绿，详见 `docs/verified-claims.md`。
